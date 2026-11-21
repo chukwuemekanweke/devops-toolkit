@@ -1,6 +1,6 @@
 # Consumer migration guide
 
-The `.NET CI` and Next.js CI workflows are implemented. Publishing, deployment, and rollback remain planned. No `v1` release alias exists yet.
+The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deployment and rollback remain planned. No `v1` release alias exists yet.
 
 ## General migration
 
@@ -29,7 +29,15 @@ The `.NET CI` and Next.js CI workflows are implemented. Publishing, deployment, 
 - Match Node and pnpm versions to `engines` and `packageManager`.
 - Use an empty filter for repository-wide Turborepo validation or a caller matrix with explicit `@template/...` filters for application-specific builds.
 - Keep User, Admin, and Public portals as independent entries in `.github/docker-images.json` and independent deployment lifecycles.
-- Supply private build configuration through one explicitly mapped environment secret per invocation. Never put secrets in `NEXT_PUBLIC_*` variables.
+- Keep build-time configuration non-secret and checked in where appropriate. Never put secrets in `NEXT_PUBLIC_*` variables or image `buildArgs`.
+
+## Adopting OCI publishing before the first release
+
+1. Commit the appropriate four-backend or three-frontend `.github/docker-images.json` file and replace illustrative `docker.io/example/...` repositories with approved Docker Hub repositories.
+2. Point the caller at `feature/devops-005-docker-publish` only for development smoke testing, or at an immutable feature commit after it has been pushed. Replace it with an immutable release tag or SHA for production adoption.
+3. Run publishing only after verification on a trusted push/release event. Map `registry-username` and `registry-token` explicitly; map the package credential pair only for backend components listed by `package-auth-components`.
+4. Confirm each published digest, Trivy report, registry-native SBOM/provenance attestation, per-component result, final manifest, and workflow output. A real Docker Hub smoke test requires explicit authorization and credentials.
+5. Treat a deployment ID as write-once. If a partial run has already created one or more release tags, investigate it and use a new deployment identity; the workflow will not move an existing tag.
 
 ## Compatibility upgrades
 

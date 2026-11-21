@@ -1,0 +1,390 @@
+name: Reusable OCI image publish
+
+on:
+  workflow_call:
+    inputs:
+      deployment-id:
+        description: Immutable release identifier
+        type: string
+        required: true
+      image-config-path:
+        description: Caller-owned image configuration path
+        type: string
+        required: false
+        default: .github/docker-images.json
+      package-auth-components:
+        description: Newline-separated components requiring GitHub Packages BuildKit secrets
+        type: string
+        required: false
+        default: ""
+      source-repository:
+        description: Source owner/repository; defaults to the caller repository
+        type: string
+        required: false
+        default: ""
+      source-commit:
+        description: Full source commit SHA; defaults to the caller SHA
+        type: string
+        required: false
+        default: ""
+      build-ref:
+        description: Auditable build reference; defaults to the caller run URL
+        type: string
+        required: false
+        default: ""
+      registry:
+        description: Supported registry host
+        type: string
+        required: false
+        default: docker.io
+      platforms:
+        description: Comma-separated OCI target platforms
+        type: string
+        required: false
+        default: linux/amd64
+      enable-cache:
+        description: Use component-scoped GitHub Actions BuildKit cache
+        type: boolean
+        required: false
+        default: true
+      scan-images:
+        description: Enforce the image vulnerability policy
+        type: boolean
+        required: false
+        default: true
+      generate-sbom:
+        description: Publish BuildKit registry SBOM attestations
+        type: boolean
+        required: false
+        default: true
+      generate-provenance:
+        description: Publish BuildKit registry provenance attestations
+        type: boolean
+        required: false
+        default: true
+      artifact-retention-days:
+        description: Evidence artifact retention from 1 through 90 days
+        type: number
+        required: false
+        default: 30
+    secrets:
+      registry-username:
+        description: Docker Hub publishing username
+        required: true
+      registry-token:
+        description: Least-privilege Docker Hub access token
+        required: true
+      github-packages-username:
+        description: Optional private package username
+        required: false
+      github-packages-token:
+        description: Optional read-only private package token
+        required: false
+    outputs:
+      deployment-id:
+        description: Validated deployment identifier
+        value: ${{ jobs.prepare.outputs.deployment-id }}
+      manifest-json:
+        description: Compact validated deployment manifest
+        value: ${{ jobs.aggregate.outputs.manifest-json }}
+      manifest-artifact:
+        description: Canonical release manifest artifact name
+        value: ${{ jobs.aggregate.outputs.manifest-artifact }}
+      published-images:
+        description: Component-to-immutable-image JSON mapping
+        value: ${{ jobs.aggregate.outputs.published-images }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish-${{ github.repository }}-${{ inputs.deployment-id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate and prepare image matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      deployment-id: ${{ steps.prepare.outputs.deployment-id }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      source-repository: ${{ steps.prepare.outputs.source-repository }}
+      source-commit: ${{ steps.prepare.outputs.source-commit }}
+      build-reference: ${{ steps.prepare.outputs.build-reference }}
+      retention-days: ${{ steps.prepare.outputs.retention-days }}
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Validate configuration and inputs
+        id: prepare
+        env:
+          DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+          IMAGE_CONFIG_PATH: ${{ inputs.image-config-path }}
+          PACKAGE_AUTH_COMPONENTS: ${{ inputs.package-auth-components }}
+          SOURCE_REPOSITORY: ${{ inputs.source-repository }}
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          BUILD_REFERENCE: ${{ inputs.build-ref }}
+          REGISTRY: ${{ inputs.registry }}
+          PLATFORMS: ${{ inputs.platforms }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
+          DEFAULT_BUILD_REFERENCE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PACKAGE_USERNAME: ${{ secrets.github-packages-username }}
+          PACKAGE_TOKEN: ${{ secrets.github-packages-token }}
+          PREPARED_DIRECTORY: ${{ runner.temp }}/docker-publish/prepared
+        run: node .devops-toolkit-source/scripts/docker-publish.mjs prepare
+
+      - name: Upload normalized configuration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-publish-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-publish/prepared/normalized.json
+          if-no-files-found: error
+          retention-days: ${{ steps.prepare.outputs.retention-days }}
+
+  build_publish:
+    name: Build, publish, and verify ${{ matrix.component }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.registry-username }}
+          password: ${{ secrets.registry-token }}
+
+      - name: Protect immutable release tag
+        shell: bash
+        env:
+          IMAGE: ${{ matrix.image }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set +e
+          inspect_output=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" 2>&1)
+          inspect_status=$?
+          set -e
+          if [[ $inspect_status -eq 0 ]]; then
+            echo "The immutable release tag already exists for component '$COMPONENT'." >&2
+            exit 1
+          fi
+          if ! grep -Eqi 'manifest unknown|not found|no such manifest' <<< "$inspect_output"; then
+            echo "Could not safely establish that the immutable release tag is unused." >&2
+            exit 1
+          fi
+
+      - name: Build and push without package credentials
+        id: build_public
+        if: ${{ !matrix.packageAuth }}
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ matrix.image }}:${{ needs.prepare.outputs.tag }}
+          build-args: ${{ matrix.buildArgsText }}
+          cache-from: ${{ inputs.enable-cache && format('type=gha,scope=docker-publish-{0}', matrix.component) || '' }}
+          cache-to: ${{ inputs.enable-cache && format('type=gha,mode=max,scope=docker-publish-{0}', matrix.component) || '' }}
+          sbom: ${{ inputs.generate-sbom }}
+          provenance: ${{ inputs.generate-provenance }}
+
+      - name: Build and push with package credentials
+        id: build_private
+        if: ${{ matrix.packageAuth }}
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        env:
+          PACKAGE_USERNAME: ${{ secrets.github-packages-username }}
+          PACKAGE_TOKEN: ${{ secrets.github-packages-token }}
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ matrix.image }}:${{ needs.prepare.outputs.tag }}
+          build-args: ${{ matrix.buildArgsText }}
+          secret-envs: |
+            GITHUB_USERNAME=PACKAGE_USERNAME
+            GITHUB_PAT=PACKAGE_TOKEN
+          cache-from: ${{ inputs.enable-cache && format('type=gha,scope=docker-publish-{0}', matrix.component) || '' }}
+          cache-to: ${{ inputs.enable-cache && format('type=gha,mode=max,scope=docker-publish-{0}', matrix.component) || '' }}
+          sbom: ${{ inputs.generate-sbom }}
+          provenance: ${{ inputs.generate-provenance }}
+
+      - name: Scan HIGH and CRITICAL vulnerabilities for diagnostics
+        if: ${{ inputs.scan-images }}
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}@${{ steps.build_public.outputs.digest || steps.build_private.outputs.digest }}
+          format: json
+          output: trivy-report.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Enforce CRITICAL vulnerability policy
+        if: ${{ inputs.scan-images }}
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}@${{ steps.build_public.outputs.digest || steps.build_private.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+          skip-setup-trivy: true
+
+      - name: Upload vulnerability report
+        if: ${{ inputs.scan-images && always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-scan-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: trivy-report.json
+          if-no-files-found: warn
+          retention-days: ${{ needs.prepare.outputs.retention-days }}
+
+      - name: Write component result
+        env:
+          COMPONENT: ${{ matrix.component }}
+          IMAGE: ${{ matrix.image }}
+          DIGEST: ${{ steps.build_public.outputs.digest || steps.build_private.outputs.digest }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PLATFORMS: ${{ inputs.platforms }}
+          SCAN_IMAGES: ${{ inputs.scan-images }}
+          GENERATE_SBOM: ${{ inputs.generate-sbom }}
+          GENERATE_PROVENANCE: ${{ inputs.generate-provenance }}
+          RESULT_DIRECTORY: ${{ runner.temp }}/docker-publish/result
+        run: node .devops-toolkit-source/scripts/docker-publish.mjs component
+
+      - name: Upload component result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-result-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-publish/result/${{ matrix.component }}.json
+          if-no-files-found: error
+          retention-days: ${{ needs.prepare.outputs.retention-days }}
+
+  aggregate:
+    name: Assemble immutable release manifest
+    needs: [prepare, build_publish]
+    runs-on: ubuntu-latest
+    outputs:
+      manifest-json: ${{ steps.aggregate.outputs.manifest-json }}
+      manifest-artifact: release-manifest-${{ needs.prepare.outputs.deployment-id }}
+      published-images: ${{ steps.aggregate.outputs.published-images }}
+    steps:
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Download normalized configuration
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: docker-publish-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-publish/prepared
+
+      - name: Download component results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: image-result-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/docker-publish/results
+          merge-multiple: true
+
+      - name: Validate results and create release manifest
+        id: aggregate
+        env:
+          PREPARED_DIRECTORY: ${{ runner.temp }}/docker-publish/prepared
+          RESULT_DIRECTORY: ${{ runner.temp }}/docker-publish/results
+          MANIFEST_DIRECTORY: ${{ runner.temp }}/docker-publish/manifest
+          DEPLOYMENT_ID: ${{ needs.prepare.outputs.deployment-id }}
+          SOURCE_REPOSITORY: ${{ needs.prepare.outputs.source-repository }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+          BUILD_REFERENCE: ${{ needs.prepare.outputs.build-reference }}
+          SCAN_IMAGES: ${{ inputs.scan-images }}
+          GENERATE_SBOM: ${{ inputs.generate-sbom }}
+          GENERATE_PROVENANCE: ${{ inputs.generate-provenance }}
+        run: node .devops-toolkit-source/scripts/docker-publish.mjs aggregate
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manifest-${{ needs.prepare.outputs.deployment-id }}
+          path: ${{ runner.temp }}/docker-publish/manifest/deployment-manifest.json
+          if-no-files-found: error
+          retention-days: ${{ needs.prepare.outputs.retention-days }}

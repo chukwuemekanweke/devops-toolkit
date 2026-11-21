@@ -56,6 +56,7 @@ This separation prevents code submitted in an ordinary pull request from gaining
 - Enable Dependabot for Actions and review release notes/source before updating pins.
 - Prefer official or verified-publisher actions with narrow behavior. Avoid actions for simple shell-free platform features.
 - Generate SBOM and provenance during publishing where supported, retain them with the manifest, and verify registry digests before deploy.
+- OCI publishing uses BuildKit registry-native SBOM and provenance attestations, not GitHub artifact attestations, and scans the pushed digest with a SHA-pinned Trivy action. Known `CRITICAL` findings and scanner failures block manifest generation; `HIGH` findings remain diagnostic.
 - Protect `main`, release tags, and the mutable `v1` alias. Only the release process may advance aliases.
 - Review changes to workflow code, composite actions, scripts, dependency pins, permissions, secrets, manifest schemas, and remote commands as security-sensitive.
 
@@ -69,6 +70,6 @@ If a workflow supply-chain compromise is suspected, stop alias advancement, disa
 
 ## Repository validation controls
 
-The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. The .NET helper also rejects absolute paths, traversal, unsupported glob syntax, path escape through symlinks, invalid configurations/diagnostic IDs, unpaired credentials, and artifact retention outside 1–90 days. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
+The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Publishing tests cover duplicate JSON properties, repository/path containment, image identity, package credential pairing, digest and scan evidence, and complete aggregation. The .NET helper also rejects absolute paths, traversal, unsupported glob syntax, path escape through symlinks, invalid configurations/diagnostic IDs, unpaired credentials, and artifact retention outside 1–90 days. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
 
 Automation does not replace review of an Action's source and release notes, credential scope, whether a permission is operationally necessary, shell argument construction that is indirect, or the trustworthiness of test fixtures. Pull requests changing workflows, dependencies, permissions, secrets, schemas, or deployment behavior must record that manual review and testing evidence.
