@@ -62,7 +62,7 @@ Static image configuration belongs to the application and describes how to build
 
 The initial model assumes one maintainer:
 
-- Use `CODEOWNERS` when repository collaboration begins; until then, the repository owner is the release approver.
+- `.github/CODEOWNERS` assigns public workflows, scripts, schemas, security, and versioning material to `@chukwuemekanweke`. CODEOWNERS records ownership; enforcement depends on branch-protection review settings.
 - All changes use pull requests, even for the sole maintainer, so validation and review evidence are retained.
 - Public contract, permissions, secret, deployment, or third-party dependency changes require an explicit contract/security review in the pull request.
 - Security-sensitive changes should receive a second knowledgeable reviewer when one is available. If none is available, record the risk review and test evidence before release.
@@ -76,7 +76,7 @@ Repository settings that must be configured manually:
 3. Require review for production GitHub Environments and restrict deployment branches/tags.
 4. Limit allowed Actions and reusable workflows; require SHA pins where repository policy permits.
 5. Enable secret scanning, push protection, Dependabot, and audit retention supported by the account plan.
-6. Add `CODEOWNERS` and required code-owner review when additional maintainers exist.
+6. Enable required code-owner review when the repository's collaboration model requires it.
 
 These are recommendations, not claims about current GitHub settings.
 

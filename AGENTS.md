@@ -26,3 +26,15 @@ This repository publishes public CI/CD contracts. Treat workflow filenames, inpu
 - Add an entry under `CHANGELOG.md` > `Unreleased` for user-visible changes.
 
 Do not create placeholder workflows that report success. A workflow file is added only when its capability is implemented and testable.
+
+## Local validation
+
+Install the pinned development requirements, then run:
+
+```text
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -v
+python scripts/validate_repository.py
+```
+
+Run `actionlint` against `.github/workflows/` after changing workflow YAML. The repository validation workflow installs a checksum-verified pinned release when it runs on GitHub.

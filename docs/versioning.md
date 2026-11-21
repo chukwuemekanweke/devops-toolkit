@@ -40,6 +40,8 @@ Most consumers may use `@v1` for compatible fixes. Regulated, production-critica
 
 No tags are created or moved by DEVOPS-001.
 
+DEVOPS-002 adds validation and documents promotion but intentionally creates no release tag: none of the five public reusable capabilities is usable yet. Releases are prepared only after a real workflow has its applicable contract, behavior, negative, and consumer smoke tests passing. Tag creation and movement remain explicit maintainer operations; validation never advances `v1` automatically.
+
 ## Release validation checklist
 
 - Every workflow parses and exposes only supported `workflow_call` types.

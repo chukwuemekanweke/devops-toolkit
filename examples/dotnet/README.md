@@ -1,6 +1,6 @@
 # Illustrative .NET consumer
 
-These files model future content in `dotnet-core-project-template`; they are not functional until the reusable workflows are implemented.
+These files model future content in `dotnet-core-project-template`; they are schema-validated by this repository but are not runnable until the reusable workflows are implemented.
 
 - `ci.yml` is a thin caller that owns push/pull-request filters, passes the `.slnx` and test patterns to `dotnet-ci.yml`, and calls publishing only after verification on a main-branch push.
 - `docker-images.json` is proposed application-owned `.github/docker-images.json` content for WebAPI, Consumer, Jobs, and DatabaseMigrator using verified current Dockerfile paths.

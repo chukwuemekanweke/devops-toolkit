@@ -1,6 +1,6 @@
 # Reusable workflow contracts
 
-This document is the authoritative public interface for planned reusable workflows. The workflows are not implemented yet. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md).
+This document is the authoritative public interface for planned reusable workflows. The five capability workflows are not implemented yet. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md). Repository validation compares every implemented `workflow_call` interface with the matching tables in this document, so the Markdown remains the single contract authority rather than being duplicated in another manifest.
 
 The interfaces follow GitHub's current [reusable workflow](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), and [secure use](https://docs.github.com/en/actions/reference/security/secure-use) documentation.
 

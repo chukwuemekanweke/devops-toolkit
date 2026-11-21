@@ -1,6 +1,6 @@
 # Consumer migration guide
 
-The workflows described here are not implemented yet. This guide prepares application repositories for later adoption and will be expanded as releases are published.
+The workflows described here are not implemented yet. Repository governance and validation are implemented, but they do not make the illustrative consumer calls runnable. This guide prepares application repositories for later adoption and will be expanded as real capability workflows and releases are published.
 
 ## General migration
 
