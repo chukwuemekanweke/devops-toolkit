@@ -1,6 +1,6 @@
 # Reusable workflow contracts
 
-This document is the authoritative public interface for planned reusable workflows. The five capability workflows are not implemented yet. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md). Repository validation compares every implemented `workflow_call` interface with the matching tables in this document, so the Markdown remains the single contract authority rather than being duplicated in another manifest.
+This document is the authoritative public interface for reusable workflows. `.NET CI` is implemented; the other four capabilities remain planned. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md). Repository validation compares every implemented `workflow_call` interface with the matching tables in this document, so the Markdown remains the single contract authority rather than being duplicated in another manifest.
 
 The interfaces follow GitHub's current [reusable workflow](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), and [secure use](https://docs.github.com/en/actions/reference/security/secure-use) documentation.
 
@@ -36,11 +36,9 @@ Runs .NET verification in distinct build, unit-test, integration-test, and cover
 | `unit-test-projects` | string | no | `tests/unit/**/*.UnitTests.csproj` | Newline-separated glob patterns resolved by the workflow |
 | `run-integration-tests` | boolean | no | `true` | Enable the integration-test job |
 | `integration-test-projects` | string | no | `tests/integration/**/*.IntegrationTests.csproj` | Newline-separated glob patterns resolved separately from unit tests |
-| `integration-compose-file` | string | no | `""` | Optional Compose file to start before integration tests; empty means tests provide their own dependencies (for example, Testcontainers) |
-| `integration-compose-services` | string | no | `""` | Optional newline-separated services from that Compose file; empty starts all services |
 | `fail-on-empty-test-set` | boolean | no | `true` | Fail when an enabled test category discovers no projects |
 | `collect-coverage` | boolean | no | `true` | Collect and combine Cobertura coverage from enabled test categories |
-| `upload-test-artifacts` | boolean | no | `true` | Upload TRX results and coverage reports even when tests fail where possible |
+| `upload-test-artifacts` | boolean | no | `true` | Upload available TRX diagnostics even when tests fail where possible |
 | `artifact-retention-days` | number | no | `14` | Retention from 1 through 90 days, validated before artifact upload |
 
 ### Secrets
@@ -51,9 +49,8 @@ No secret is universally required.
 | --- | --- | --- |
 | `nuget-username` | no | Username for a private NuGet source configured by the caller's `nuget.config` |
 | `nuget-token` | no | Token for that private source; must be supplied with `nuget-username` |
-| `integration-env` | no | Complete dotenv content written to a temporary mode-restricted file for Compose and deleted during cleanup |
 
-Private NuGet authentication remains caller-controlled. A repository should check in a `nuget.config` containing the source URL and an environment-variable credential reference, then explicitly map a read-only package token. A fine-grained token or `GITHUB_TOKEN` with `packages: read` is preferred where supported. Credentials must not be placed in inputs, command-line arguments, cache keys, or artifacts.
+Private NuGet authentication remains caller-controlled. A repository should check in a `nuget.config` containing the source URL and `GITHUB_USERNAME`/`GITHUB_PAT` environment-variable credential references, then explicitly map a read-only package token. The two secrets must be supplied together; neither is required for public-only restores. A fine-grained token or `GITHUB_TOKEN` with `packages: read` is preferred where supported. Credentials are exposed only to restore steps and must not be placed in inputs, command-line arguments, cache keys, outputs, or artifacts.
 
 ### Permissions
 
@@ -67,12 +64,18 @@ Minimum: `contents: read`. Add `packages: read` only when `GITHUB_TOKEN` is used
 | `unit-test-result` | Unit job result, including `skipped` when disabled |
 | `integration-test-result` | Integration job result, including `skipped` when disabled |
 | `verification-passed` | `true` only when build and every enabled test category succeed |
-| `test-results-artifact` | Artifact name containing TRX files, or empty when uploads are disabled |
+| `test-results-artifact` | Combined diagnostic artifact name containing available TRX files, or empty when uploads are disabled or no test category ran |
 | `coverage-artifact` | Combined coverage artifact name, or empty when coverage is disabled/unavailable |
 
 ### Execution and failure behavior
 
-Restore and format precede build. Unit and integration jobs depend on a successful build but run independently of each other. GitHub-hosted Ubuntu runners provide Docker for Testcontainers-capable integration suites; no extra service input is required for repositories that own their containers through Testcontainers. Explicit Compose services, when configured, start only in the integration job and are always torn down. The coverage/report job uses `if: always()` to retain available results, but it must not turn a failed test into a successful workflow. Missing enabled test projects, invalid paths, failed service startup, failed tests, or missing expected coverage fail the relevant job. Downstream caller jobs that `need` this reusable-workflow job will not run unless the caller deliberately uses an `if` override.
+Restore and format precede build. The build job uploads its compiled `bin/<configuration>` outputs; isolated test runners restore assets, download those exact outputs, and run with `--no-build`. This costs artifact transfer but prevents the unit and integration jobs from compiling a different result. Unit and integration jobs depend on a successful build but run independently of each other.
+
+GitHub-hosted Ubuntu runners provide Docker for Testcontainers-based integration suites. The workflow verifies the Docker daemon before testing and rejects a successful `dotnet test` result whose TRX diagnostics say Docker was unavailable. Testcontainers fixtures own infrastructure lifecycle; this workflow does not accept Compose configuration or start an application stack. Docker Compose remains appropriate for application-owned local and deployment orchestration, not this CI contract.
+
+Discovery is deterministic, supports multiple newline-separated `*`, `**`, and `?` project globs, preserves paths containing spaces, and rejects absolute paths, traversal, unsupported glob syntax, and symlink escape. Every discovered project runs even after an earlier failure, and any failed project fails its category. An enabled empty category fails by default; setting `fail-on-empty-test-set: false` makes it a successful no-op. Disabled jobs report `skipped`.
+
+The coverage/report job uses `if: always()` to retain available diagnostics without concealing upstream failures. Coverage collection uses each test project's `coverlet.collector`, and the report job combines Cobertura inputs into HTML and Cobertura outputs with pinned ReportGenerator `5.6.1`. Missing coverage from an otherwise successful enabled category is a failure. Coverage is not expected when collection is disabled, both test categories are disabled, or a failed test did not produce a coverage file. Internal raw coverage artifacts transport files between isolated jobs; `coverage-artifact` names only the combined report. Downstream caller jobs that need this reusable-workflow job do not run after verification failure unless the caller deliberately overrides the condition.
 
 Untrusted pull-request code may use this workflow with no privileged secrets. Fork pull requests must not receive private package or integration secrets; callers should use a trusted dependency strategy or avoid running secret-dependent checks for forks.
 
@@ -83,7 +86,9 @@ verify:
   permissions:
     contents: read
     packages: read
-  uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@v1
+  # Development smoke test only. Replace this branch with the resulting immutable
+  # commit SHA or validated release tag before adoption.
+  uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@feature/devops-003-dotnet-ci
   with:
     solution-path: BackendProjectTemplate.slnx
     dotnet-version: 10.0.x

@@ -40,7 +40,7 @@ Most consumers may use `@v1` for compatible fixes. Regulated, production-critica
 
 No tags are created or moved by DEVOPS-001.
 
-DEVOPS-002 adds validation and documents promotion but intentionally creates no release tag: none of the five public reusable capabilities is usable yet. Releases are prepared only after a real workflow has its applicable contract, behavior, negative, and consumer smoke tests passing. Tag creation and movement remain explicit maintainer operations; validation never advances `v1` automatically.
+DEVOPS-002 added validation and documented promotion without creating a release tag. DEVOPS-003 implements the first public capability, `.NET CI`, but still does not create or move `v1`; a release is prepared only after its contract, behavior, negative, and representative consumer smoke tests pass on a real GitHub Actions runner. Tag creation and movement remain explicit maintainer operations; validation never advances `v1` automatically.
 
 ## Release validation checklist
 

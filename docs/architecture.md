@@ -18,7 +18,7 @@ Terraform may provision future servers and prerequisites, but is not a dependenc
 
 ## Capability model
 
-The five planned reusable workflows form a pipeline without requiring a single orchestrator:
+The implemented .NET CI workflow and four planned reusable workflows form a pipeline without requiring a single orchestrator:
 
 ```text
 dotnet-ci / nextjs-ci
@@ -51,7 +51,7 @@ No empty placeholder directory is retained. Later tickets create implementation 
 
 The contracts model topology as application-owned versioned data:
 
-- The current .NET reference has WebAPI, Consumer, Jobs, and DatabaseMigrator Dockerfiles, while CI separately builds, runs unit tests, runs integration tests, and combines coverage.
+- The current .NET reference has WebAPI, Consumer, Jobs, and DatabaseMigrator Dockerfiles, while CI separately builds, runs unit tests, runs Testcontainers-based integration tests, and combines coverage. CI verifies Docker availability but does not start a Compose stack; the application fixtures own PostgreSQL, RabbitMQ, Redis, Tempo, and OpenTelemetry Collector lifecycle.
 - The current frontend reference is a pnpm 11/Turborepo workspace with User, Admin, and Public portals. Each portal owns its build and deployment lifecycle.
 
 Neither topology is embedded in toolkit code or discovered dynamically. Each application commits its fixed known deployables to `.github/docker-images.json`, and the caller passes `image-config-path`. The backend example declares four components; the frontend example declares three. Other consumers may declare a different fixed count without selecting a toolkit-specific preset. Publishing converts the validated file into an internal matrix and the generated release manifest maps stable component names to immutable image digests.
