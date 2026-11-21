@@ -1,0 +1,60 @@
+# Illustrative caller only. The referenced reusable workflows are planned and
+# do not exist until subsequent implementation tickets are complete.
+name: Next.js CI and images
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/frontend-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/frontend-ci.yml"
+
+permissions: {}
+
+jobs:
+  verify-apps:
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/nextjs-ci.yml@v1
+    with:
+      node-version: 22.13.0
+      pnpm-version: 11.20.0
+      working-directory: .
+      run-lint: true
+      run-typecheck: true
+      run-tests: true
+      run-build: true
+      build-config-files: >-
+        {
+          "apps/user-portal/.env.local":"apps/user-portal/.env.example",
+          "apps/admin-portal/.env.local":"apps/admin-portal/.env.example",
+          "apps/public-portal/.env.local":"apps/public-portal/.env.example"
+        }
+
+  publish-images:
+    needs: verify-apps
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/docker-publish.yml@v1
+    with:
+      deployment-id: ${{ github.sha }}
+      image-config-path: .github/docker-images.json
+    secrets:
+      registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
+      registry-token: ${{ secrets.DOCKERHUB_TOKEN }}

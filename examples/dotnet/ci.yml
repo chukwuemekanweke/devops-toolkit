@@ -1,0 +1,63 @@
+# Illustrative caller only. The referenced reusable workflows are planned and
+# do not exist until subsequent implementation tickets are complete.
+name: .NET CI and images
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "*.slnx"
+      - "Directory.*.props"
+      - "nuget.config"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "*.slnx"
+      - "Directory.*.props"
+      - "nuget.config"
+      - ".github/workflows/ci.yml"
+
+permissions: {}
+
+jobs:
+  verify:
+    permissions:
+      contents: read
+      packages: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@v1
+    with:
+      dotnet-version: 10.0.x
+      solution-path: BackendProjectTemplate.slnx
+      build-configuration: Release
+      unit-test-projects: tests/unit/**/*.UnitTests.csproj
+      integration-test-projects: tests/integration/**/*.IntegrationTests.csproj
+      run-format: true
+      collect-coverage: true
+    secrets:
+      nuget-username: ${{ secrets.GH_PKG_USERNAME }}
+      nuget-token: ${{ secrets.GH_PKG_PAT }}
+
+  publish-images:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/docker-publish.yml@v1
+    with:
+      deployment-id: ${{ github.sha }}
+      image-config-path: .github/docker-images.json
+      package-auth-components: |
+        webapi
+        consumer
+        jobs
+        migrator
+    secrets:
+      registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
+      registry-token: ${{ secrets.DOCKERHUB_TOKEN }}
+      github-packages-username: ${{ secrets.GH_PKG_USERNAME }}
+      github-packages-token: ${{ secrets.GH_PKG_PAT }}
