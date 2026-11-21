@@ -56,7 +56,26 @@ The contracts model topology as application-owned versioned data:
 
 Neither topology is embedded in toolkit code or discovered dynamically. Each application commits its fixed known deployables to `.github/docker-images.json`, and the caller passes `image-config-path`. The backend example declares four components; the frontend example declares three. Other consumers may declare a different fixed count without selecting a toolkit-specific preset. Publishing converts the validated file into an internal matrix and the generated release manifest maps stable component names to immutable image digests.
 
-Static image configuration belongs to the application and describes how to build. A generated release manifest belongs to a specific publish run and describes exactly what was built. Environment-specific Compose files map those release components to runtime services. Long-lived runtime application secrets are delivered separately by the later Infisical design; the toolkit repository and deployment workflow do not store them.
+Static image configuration belongs to the application and describes how to build. A generated release manifest belongs to a specific publish run and describes exactly what was built. Environment-specific Compose files map those release components to runtime services. Long-lived runtime application secrets are delivered separately through the [Doppler runtime secrets design](doppler/architecture.md); the toolkit repository and deployment workflow do not store them.
+
+## Runtime secrets boundary
+
+DEVOPS-006 designs runtime secret delivery as a separate capability with its own credentials and failure semantics. It is documented, not implemented:
+
+- Doppler (Developer plan) is the system of record. The model is one project per application, `dev`/`stg`/`prd` environments, and one branch config per Compose service (`<env>_<service>`). Root configs hold no runtime secrets, because every branch config inherits its root.
+- Each VPS reads secrets directly from Doppler with one read-only, expiring service token per service config per host. Tokens are installed by a secrets administrator as encrypted systemd credentials, never by GitHub Actions or provisioning automation.
+- Host-side systemd units render each service's secrets into an atomic, key-per-file generation that Compose mounts read-only at `/run/secrets/app`. The host enforces an application-owned key list. Applications load the directory with standard providers (for example .NET `KeyPerFile`) and contain no Doppler dependency.
+- GitHub Actions triggers rendering for a validated stack and environment and observes the outcome. It never receives Doppler tokens or secret values. `docker-publish.yml` is unaffected.
+
+| Capability | Credential | Holder |
+| --- | --- | --- |
+| Publish | Registry push, package read | GitHub Actions publish/CI jobs |
+| Deploy/rollback | SSH deploy key, registry pull token | Protected GitHub Environment |
+| Runtime secrets | Read-only Doppler service token per service config per host | VPS only, encrypted systemd credential |
+
+The Developer plan has no IP allowlisting, no human role-based access, and only 3 days of activity logs. The design documents those limits and their compensating controls rather than assuming paid features.
+
+See [architecture](doppler/architecture.md), [secret inventory](doppler/secret-inventory.md), [access policy](doppler/access-policy.md), [VPS bootstrap and delivery](doppler/vps-bootstrap.md), [rotation and revocation](doppler/rotation-and-revocation.md), and [audit and threat model](doppler/audit-and-threat-model.md). The host delivery implementation (DEVOPS-007), Doppler provisioning, template configuration changes, and `vps-deploy.yml`/`vps-rollback.yml` integration are later tickets.
 
 ## Ownership and change management
 

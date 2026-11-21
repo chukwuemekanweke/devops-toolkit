@@ -297,7 +297,7 @@ Exactly one of `manifest-json` or `manifest-artifact` is logically required and 
 | `registry-username` | yes | Read-only registry identity used on the VPS |
 | `registry-token` | yes | Read-only token for image pulls |
 
-Production application secrets are not a deployment-workflow secret input. Application-owned Compose definitions consume the later Infisical-delivered, service-scoped read-only files described by DEVOPS-006/007. GitHub Actions needs deployment and registry credentials, not long-lived database, messaging, signing, or application credentials.
+Production application secrets are not a deployment-workflow secret input. Application-owned Compose definitions consume the later Doppler-delivered, service-scoped read-only files described by DEVOPS-006/007 ([design](doppler/architecture.md)). GitHub Actions needs deployment and registry credentials, not long-lived database, messaging, signing, or application credentials.
 
 ### Permissions
 

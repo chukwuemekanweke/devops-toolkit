@@ -1,6 +1,6 @@
 # Consumer migration guide
 
-The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deployment and rollback remain planned. No `v1` release alias exists yet.
+The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deployment and rollback remain planned. Doppler runtime secret delivery is designed but not implemented. No `v1` release alias exists yet.
 
 ## General migration
 
@@ -38,6 +38,25 @@ The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deploym
 3. Run publishing only after verification on a trusted push/release event. Map `registry-username` and `registry-token` explicitly; map the package credential pair only for backend components listed by `package-auth-components`.
 4. Confirm each published digest, Trivy report, registry-native SBOM/provenance attestation, per-component result, final manifest, and workflow output. A real Docker Hub smoke test requires explicit authorization and credentials.
 5. Treat a deployment ID as write-once. If a partial run has already created one or more release tags, investigate it and use a new deployment identity; the workflow will not move an existing tag.
+
+## Preparing for Doppler runtime secrets
+
+Runtime secret delivery is designed in [docs/doppler](doppler/architecture.md) but not implemented. Earlier documents referred to a planned Infisical provider; no Infisical integration was ever implemented, so there is nothing to migrate away from. No consumer action is required yet. To prepare without changing production behavior:
+
+1. Review the [Developer-plan limitations](doppler/access-policy.md#free-plan-limitations-and-compensating-controls): no IP allowlisting, no human role-based access, and 3 days of activity logs. Decide whether they are acceptable for the application's production data, or whether the Team plan is needed. The hierarchy and host delivery are the same on both.
+2. Review the application's entries in the [secret inventory](doppler/secret-inventory.md). Confirm which services actually use each shared provider credential (payments in particular), and record any new integrations.
+3. Plan template changes in the application repository:
+   - load `/run/secrets/app` with a key-per-file provider (no Doppler SDK),
+   - commit a per-service key list naming every secret each service may receive,
+   - validate required secrets at startup and remove hardcoded secret defaults,
+   - stop passing build-only package credentials to runtime containers,
+   - make the migrator exit after migrating,
+   - split database, broker, and storage credentials per service where the provider supports it.
+4. Use upper-case secret names with `__` as the hierarchy separator (Doppler's default Classic naming), for example `CONNECTIONSTRINGS__POSTGRESWRITE`. .NET binds them case-insensitively.
+5. Keep `NEXT_PUBLIC_*` and other public build-time configuration out of Doppler. Keep non-secret runtime configuration in application-owned Compose files.
+6. Do not add Doppler tokens or application secret values to GitHub Actions secrets, images, or Compose files. The deployment workflows will not accept them.
+
+Provisioning Doppler, issuing tokens, migrating credentials, and switching Compose mounts happen in the implementation tickets, staging first. Rotate each credential as it moves, so that values previously held in `.env` files or Compose are retired.
 
 ## Compatibility upgrades
 
