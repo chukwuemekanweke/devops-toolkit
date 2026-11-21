@@ -1,6 +1,5 @@
-# The verification job is runnable while developing DEVOPS-004. Replace the
-# feature branch with a validated immutable release tag or full commit SHA for
-# production adoption. The publishing workflow remains planned and is omitted.
+# Development smoke caller for reusable Next.js CI and OCI publishing. Replace
+# feature branches with validated immutable release tags or full commit SHAs.
 name: Next.js CI
 
 on:
@@ -59,3 +58,16 @@ jobs:
   #     workspace-filters: '@template/user-portal...'
   #     build-config-files: >-
   #       {"apps/user-portal/.env.local":"apps/user-portal/.env.example"}
+
+  publish-images:
+    needs: verify-monorepo
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/docker-publish.yml@feature/devops-005-docker-publish
+    with:
+      deployment-id: ${{ github.sha }}
+      image-config-path: .github/docker-images.json
+    secrets:
+      registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
+      registry-token: ${{ secrets.DOCKERHUB_TOKEN }}

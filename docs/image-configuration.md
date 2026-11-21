@@ -54,7 +54,7 @@ The machine-readable schema is [docker-images.schema.json](schemas/docker-images
 Before registry authentication or a build starts, the publishing workflow must:
 
 1. Resolve `image-config-path` from the repository root and reject an absolute path, NUL, `..` traversal, or symlink escape.
-2. Reject a missing file, malformed JSON, duplicate JSON properties, unknown top-level/image fields, unsupported `schemaVersion`, or an empty/oversized `images` array.
+2. Reject a missing file, a file larger than 256 KiB, malformed JSON, duplicate JSON properties, unknown top-level/image fields, unsupported `schemaVersion`, or an empty/oversized `images` array.
 3. Require unique valid component identifiers.
 4. Require a normalized Docker Hub repository without a tag, digest, whitespace, shell metacharacters, or a registry host inconsistent with the selected registry.
 5. Canonicalize every Dockerfile and context path, reject traversal/symlink escape, and verify the Dockerfile is a regular file inside its existing context/check-out boundary.
@@ -63,6 +63,8 @@ Before registry authentication or a build starts, the publishing workflow must:
 
 Validation errors fail the workflow before login and identify the component and field without printing secret contexts.
 
+After validation, the workflow emits a deterministic internal matrix with one entry per configured image. `context` defaults to `.`, build-argument keys are sorted, and package-auth selection is attached as internal metadata. The normalized file is uploaded only as run-internal aggregation evidence; it does not change the caller's committed file.
+
 ## Build credential boundary
 
 Secret values never appear in this file. Docker Hub credentials authenticate publishing globally. The initial private-package contract uses optional reusable-workflow secrets `github-packages-username` and `github-packages-token`, plus the non-secret `package-auth-components` input listing only components whose Dockerfiles require them.
@@ -70,6 +72,8 @@ Secret values never appear in this file. Docker Hub credentials authenticate pub
 For the current backend, all four Dockerfiles use BuildKit secret IDs `GITHUB_USERNAME` and `GITHUB_PAT`. The implementation maps the two explicitly named workflow secrets to those IDs only for the selected component builds. The frontend Dockerfiles currently require no BuildKit secret. This fixed contract is clearer and safer than a generic secret bag or repetitive `build_secret_ids` arrays.
 
 Credentials must use BuildKit secret mounts and must not be converted to build arguments, copied into layers, included in cache metadata, echoed, or written to manifests/artifacts. A missing half of the credential pair or an unknown component in `package-auth-components` fails validation.
+
+BuildKit cache uses the GitHub Actions cache backend with a component-specific scope when `enable-cache` is true. Cache data is an optimization and is never release evidence. The registry-resolved digest remains authoritative.
 
 ## Reference application examples
 

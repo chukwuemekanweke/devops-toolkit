@@ -1,0 +1,13 @@
+export const manifestOutputLimit: number;
+export function parseJsonStrict(text: string, label?: string): unknown;
+export function normalizeDeploymentTag(deploymentId: string): string;
+export function validateDeploymentId(value: string): string;
+export function parsePlatforms(value?: string): string[];
+export function parsePackageAuthComponents(value: string | undefined, known: string[]): string[];
+export function validateCredentialPair(required: boolean, username?: string, token?: string): void;
+export function validateAndNormalizeConfig(text: string, options: { workspace: string; registry: string; platforms: string; packageAuthComponents?: string; packageUsername?: string; packageToken?: string }): { schemaVersion: number; registry: string; platforms: string[]; images: Array<{ component: string; image: string; dockerfile: string; context: string; buildArgs: Record<string, string>; buildArgsText: string; packageAuth: boolean }> };
+export function validatePrepareInputs(environment: NodeJS.ProcessEnv, workspace: string): unknown;
+export function buildArgsList(buildArgs: Record<string, string>): string;
+export function createComponentResult(values: { component: string; image: string; digest: string; tag: string; platforms: string; scanEnabled: boolean; sbomEnabled: boolean; provenanceEnabled: boolean }): Record<string, unknown>;
+export function aggregateRelease(values: { normalized: string | Record<string, unknown>; results: Array<string | Record<string, unknown>>; deploymentId: string; sourceRepository: string; sourceCommit: string; buildReference: string; createdAt: string; scanImages: boolean; generateSbom?: boolean; generateProvenance?: boolean }): { manifest: Record<string, unknown>; manifestJson: string; publishedImages: string };
+export function stableStringify(value: unknown): string;

@@ -10,13 +10,13 @@ The initial consumers are:
 
 ## Status
 
-This repository provides the governance and validation foundation for public contracts and the implemented .NET and Next.js verification capabilities. Publishing and deployment capabilities stay explicitly planned until their implementation tickets land.
+This repository provides the governance and validation foundation for public contracts and the implemented .NET, Next.js, and OCI image publishing capabilities. Deployment capabilities stay explicitly planned until their implementation tickets land.
 
 | Workflow | Status | Capability |
 | --- | --- | --- |
 | `dotnet-ci.yml` | Implemented | Restore, format, build, unit test, Testcontainers integration test, and report coverage |
 | `nextjs-ci.yml` | Implemented | Install, lint, type-check, test, and build all or selected pnpm workspaces |
-| `docker-publish.yml` | Planned | Build and publish one or many images and produce an immutable release manifest |
+| `docker-publish.yml` | Implemented | Validate, build, scan, and publish one or many OCI images and produce an immutable release manifest |
 | `vps-deploy.yml` | Planned | Deploy a manifest to a Docker Compose VPS and verify health |
 | `vps-rollback.yml` | Planned | Restore a recorded manifest without rebuilding source |
 

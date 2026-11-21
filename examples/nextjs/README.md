@@ -1,6 +1,6 @@
 # Next.js consumer example
 
-`ci.yml` is a thin caller for the implemented reusable Next.js CI workflow. It preserves application-owned pull-request and main-branch path filters, reads Node from `.node-version`, verifies the complete pnpm/Turborepo monorepo, and copies the three checked-in safe `.env.example` files before build.
+`ci.yml` is a thin caller for the implemented reusable Next.js CI and OCI publishing workflows. It preserves application-owned pull-request and main-branch path filters, reads Node from `.node-version`, verifies the complete pnpm/Turborepo monorepo, copies the three checked-in safe `.env.example` files before build, and publishes only after a successful trusted push to `main`.
 
 The commented single-portal job demonstrates filtered verification without placing portal names in the toolkit. Newline-separated `workspace-filters` values are pnpm selectors, so a selector such as `@template/user-portal...` includes that application and its required workspace dependencies. A caller-owned matrix can invoke the same workflow independently for several deployable applications.
 
@@ -10,4 +10,6 @@ Both public and private dependency cases require only `contents: read` from this
 
 Optional build artifacts are diagnostics only. Set `upload-build-artifacts: true`, provide explicit repository-relative `build-artifact-paths`, and choose retention from 1 through 90 days. The helper rejects traversal, missing paths, globs, and sensitive filenames such as `.env*`, `.npmrc`, credentials, tokens, and private keys.
 
-`docker-images.json` remains proposed application-owned input for the planned publishing capability. DEVOPS-004 does not publish containers or create deployment artifacts.
+`docker-images.json` declares the three independently built portal images. Publishing maps only Docker Hub credentials, uses no package BuildKit secrets, scans the published digests, and produces a complete release manifest. Replace the illustrative `docker.io/example/...` repositories before smoke testing. The workflow does not deploy the images.
+
+Current reference-template limitation: a local non-publishing build of `apps/user-portal/Dockerfile` reaches Next.js page-data collection and then fails because required build-time environment values such as `API_BASE_URL`, `APP_ENVIRONMENT`, `APPLICATION_NAME`, and `APPLICATION_VERSION` are absent. The current `.dockerignore` excludes `.env*` (other than examples), and the Dockerfiles do not promote an example or accept the required public settings. Resolve that application-owned Dockerfile/build-configuration contract in the consumer before expecting an end-to-end three-image publish; the toolkit does not inject server secrets or rewrite consumer Dockerfiles.

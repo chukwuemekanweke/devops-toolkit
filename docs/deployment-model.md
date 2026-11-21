@@ -53,7 +53,7 @@ The manifest is canonicalized with UTF-8 encoding and stable key order before ca
 
 ## Lifecycle
 
-1. **Build:** image publishing validates input, pushes every component, resolves digests, emits the manifest as a run artifact, and exposes compact JSON for immediate orchestration.
+1. **Build:** image publishing validates input before login, pushes every component through an internal matrix, scans each published digest, and uploads one validated result artifact per component. A non-matrix aggregation job requires exactly the configured result set, emits the manifest as a run artifact, and exposes compact JSON for immediate orchestration.
 2. **Initial deployment:** deployment validates the schema, pulls every digest, generates a Compose image override, verifies health, and records the manifest as active.
 3. **History:** the target keeps append-only sanitized records plus immutable manifest copies. Environment metadata records who deployed what, when, from which workflow run, and the result.
 4. **Reproduction:** a supported Compose configuration plus the manifest recreates the same application image set without source rebuild.
@@ -61,6 +61,8 @@ The manifest is canonicalized with UTF-8 encoding and stable key order before ca
 6. **Audit:** source commit, build reference, manifest hash, workflow run, actor, environment, and deployment/rollback outcomes form the chain of evidence.
 
 `created_at` is release metadata produced during publishing. Environment-specific `deployed_at`, deployer, environment, previous deployment ID, health result, and rollback reason belong in deployment history, not in the portable release manifest.
+
+Aggregation is atomic at the manifest boundary. A failed build, push, scan, or missing/invalid component result prevents the aggregation job and therefore prevents a deployable manifest. Registry pushes completed before another component fails can remain and are subject to registry lifecycle policy; their existence alone is not a successful release.
 
 ## Suggested remote state
 
