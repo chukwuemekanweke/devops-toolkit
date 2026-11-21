@@ -212,7 +212,7 @@ Notes:
 
 | Credential | Owner | Status | Sensitivity | Proposed storage | Rotation |
 | --- | --- | --- | --- | --- | --- |
-| Read-only service token, one per config per host | Secrets administrator | Planned | Critical for its config: it is a bearer credential that reads every secret in that config directly | Encrypted systemd credential on the host ([bootstrap](vps-bootstrap.md#installing-a-service-token)) | Every 90 days with a hard expiry, and on any incident ([runbook](rotation-and-revocation.md#doppler-service-token)) |
+| Read-only service token, one per config per host | Secrets administrator | Planned per consumer | Critical for its config: it is a bearer credential that reads every secret in that config directly | Encrypted systemd credential on the host ([bootstrap](vps-bootstrap.md#install-or-replace-a-token)) | Every 90 days with a hard expiry, and on any incident ([runbook](rotation-and-revocation.md#doppler-service-token)) |
 
 Unlike an exchange-based machine identity, a Doppler service token is not swapped for a short-lived access token. The bootstrap credential **is** the access credential. Its protection, scope, and expiry therefore determine exposure.
 

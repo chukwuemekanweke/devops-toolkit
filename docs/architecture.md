@@ -42,6 +42,7 @@ The caller connects jobs with `needs` and chooses which capabilities to use. CI 
 - `.github/workflows/` contains directly callable job-level workflows. Files must be at this exact depth.
 - `actions/` contains composite actions used inside jobs when several workflows need the same steps.
 - `scripts/` contains narrow helpers whose inputs can be validated and tested outside Actions.
+- `systemd/` contains reusable host-side runtime-secret unit templates and policy examples.
 - `examples/` contains caller-owned workflow examples, not toolkit implementation.
 - `docs/` is the authoritative public architecture and operating policy.
 
@@ -75,7 +76,7 @@ DEVOPS-006 designs runtime secret delivery as a separate capability with its own
 
 The Developer plan has no IP allowlisting, no human role-based access, and only 3 days of activity logs. The design documents those limits and their compensating controls rather than assuming paid features.
 
-See [architecture](doppler/architecture.md), [secret inventory](doppler/secret-inventory.md), [access policy](doppler/access-policy.md), [VPS bootstrap and delivery](doppler/vps-bootstrap.md), [rotation and revocation](doppler/rotation-and-revocation.md), and [audit and threat model](doppler/audit-and-threat-model.md). The host delivery implementation (DEVOPS-007), Doppler provisioning, template configuration changes, and `vps-deploy.yml`/`vps-rollback.yml` integration are later tickets.
+See [architecture](doppler/architecture.md), [secret inventory](doppler/secret-inventory.md), [access policy](doppler/access-policy.md), [VPS bootstrap and delivery](doppler/vps-bootstrap.md), [rotation and revocation](doppler/rotation-and-revocation.md), and [audit and threat model](doppler/audit-and-threat-model.md). DEVOPS-007 now implements the host helper and unit templates. Doppler provisioning, template configuration changes, and `vps-deploy.yml`/`vps-rollback.yml` integration remain later tickets.
 
 ## Ownership and change management
 

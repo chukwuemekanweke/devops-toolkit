@@ -1,6 +1,6 @@
 # Audit, access reviews, and threat model
 
-Status: **Design (DEVOPS-006).** Audit capabilities marked *Verified* were checked against official Doppler documentation and pricing on 2026-11-21 ([sources](architecture.md#sources-and-verification)). Review procedures are proposed policy.
+Status: **Threat model and operating policy for DEVOPS-006/007.** Audit capabilities marked *Verified* were checked against official Doppler documentation and pricing on 2026-11-21 ([sources](architecture.md#sources-and-verification)).
 
 ## Audit sources
 
@@ -11,7 +11,7 @@ Status: **Design (DEVOPS-006).** Audit capabilities marked *Verified* were check
 | Doppler config logs and versioning | Every change to a config, with rollback; secret versions retained for the secret's lifetime (Verified) | Yes | Versions: secret lifetime. Rollback window on Developer: **unverified** |
 | Doppler webhooks | Notifications on config changes to an external endpoint | Yes (5 webhooks) | Determined by the receiver |
 | Log forwarding to a SIEM | — | **No** | — |
-| Host render journal and `.meta` | Every render: instance, generation, key count, outcome. No values | Toolkit (DEVOPS-007) | Shipped off-host; at least 1 year |
+| Host render journal and `.metadata.json` | Every render: instance, generation, key count, outcome. No values or value hashes | Toolkit (DEVOPS-007) | Shipped off-host; at least 1 year |
 | Deployment history | Manifest hash, generation IDs, actor, outcome | Toolkit (DEVOPS-008) | At least 1 year |
 | Change log | Every Doppler administrative action, with reason and ticket | Process | Indefinite (version control or ticket system) |
 
@@ -116,7 +116,7 @@ Scope: Doppler (Developer plan), the Linux VPS, Docker Compose services, the ren
 
 - **Scenario:** a tampered image or Compose file mounts other services' secret directories or exfiltrates its own.
 - **Preventive controls:** digest-pinned images with scan, SBOM, and provenance; validated manifests; reviewed application Compose files; protected GitHub Environments.
-- **Residual risk:** Compose runs with root-equivalent Docker privileges. Code review is the control. DEVOPS-008 could reject mounts under `/var/lib/runtime-secrets` that do not match the service's own directory.
+- **Residual risk:** Compose runs with root-equivalent Docker privileges. Code review is the control. DEVOPS-009 should reject mounts under `/run/runtime-secrets` that do not match the service's own directory.
 
 ### T6. Misplaced or over-broad secrets
 
@@ -137,7 +137,7 @@ Scope: Doppler (Developer plan), the Linux VPS, Docker Compose services, the ren
 
 ### T8. Secret exposure through logs
 
-- **Preventive controls:** payload piped, never printed; no `set -x`; no CLI debug output; sanitized `.meta`; GitHub Actions never holds values; `LimitCORE=0`; applications must not log configuration.
+- **Preventive controls:** payload captured only in bounded memory, never printed; no `set -x`; no CLI debug output; sanitized `.metadata.json`; GitHub Actions never holds values; `LimitCORE=0`; applications must not log configuration.
 - **Recovery:** [secret exposed in logs](rotation-and-revocation.md#secret-exposed-in-logs).
 - **Residual risk:** application code can still log configuration; an application responsibility.
 
@@ -170,9 +170,9 @@ Scope: Doppler (Developer plan), the Linux VPS, Docker Compose services, the ren
 ### T13. Doppler outage, rate limiting, or token expiry
 
 - **Assets at risk:** availability of deployments and rotations.
-- **Preventive controls:** persistent last-known-good generations; boot does not depend on Doppler; renders fail before any mutation; token expiry tracked monthly.
-- **Recovery:** [provider outage](vps-bootstrap.md#provider-outage) and [token expiry and revocation](vps-bootstrap.md#token-expiry-and-revocation).
-- **Residual risk:** emergency rotation is blocked during an outage. Containment at the provider (revocation) is still possible and takes precedence.
+- **Preventive controls:** runtime refresh failure never mutates `current`; tmpfs boot initialization is ordered before secret-bearing stacks; bounded retry covers only transient failures; token expiry is tracked monthly.
+- **Recovery:** follow [boot and outage recovery](vps-bootstrap.md#boot-ordering-and-outage-recovery) and the token replacement runbook.
+- **Residual risk:** a provider outage blocks boot after tmpfs loss and blocks emergency rotation. Already running containers remain available only while the host stays up. Provider revocation still takes precedence for containment.
 
 ## Summary of residual risks
 

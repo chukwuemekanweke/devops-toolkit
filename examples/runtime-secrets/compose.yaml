@@ -1,0 +1,17 @@
+services:
+  webapi:
+    image: example/backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    user: "21000:21001"
+    group_add:
+      - "21001"
+    restart: "no"
+    read_only: true
+    volumes:
+      - type: bind
+        source: /run/runtime-secrets/example-backend/prd/webapi/current
+        target: /run/secrets/app
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true

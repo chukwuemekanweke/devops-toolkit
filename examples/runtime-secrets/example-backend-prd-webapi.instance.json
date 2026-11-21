@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "application": "example-backend",
+  "environment": "prd",
+  "service": "webapi",
+  "expectedDopplerProject": "example-backend",
+  "expectedDopplerConfig": "prd_webapi",
+  "outputDirectory": "/run/runtime-secrets/example-backend/prd/webapi",
+  "serviceGroupId": 21001,
+  "keyManifestPath": "/etc/runtime-secrets/manifests/example-backend-webapi.json",
+  "dopplerExecutable": "/usr/local/bin/doppler",
+  "dopplerCliVersion": "3.77.0",
+  "providerTimeoutSeconds": 30,
+  "providerRetries": 2
+}

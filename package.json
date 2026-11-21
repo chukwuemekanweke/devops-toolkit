@@ -9,6 +9,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:runtime-secrets:linux": "vitest run tests/runtime-secrets.test.ts",
+    "validate:systemd": "bash scripts/validate-runtime-secrets-systemd.sh",
     "validate": "tsx src/validation/index.ts"
   },
   "dependencies": {

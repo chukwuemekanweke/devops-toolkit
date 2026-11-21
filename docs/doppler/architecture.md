@@ -1,6 +1,6 @@
 # Doppler runtime secrets architecture
 
-Status: **Design (DEVOPS-006).** Nothing in this document set is operational. No Doppler workplace, project, config, service token, host helper, or Compose integration has been created by this ticket. The host-side delivery helper is owned by DEVOPS-007, and deployment integration by the `vps-deploy.yml`/`vps-rollback.yml` tickets ([implementation dependencies](#implementation-dependencies)).
+Status: **Architecture plus implemented host primitive (DEVOPS-006/007).** The reusable helper, schemas, systemd templates and Compose contract are implemented. Doppler tenant resources, application adoption and deployment-workflow orchestration remain separate work ([implementation dependencies](#implementation-dependencies)).
 
 This document set defines how applications deployed by the toolkit obtain long-lived runtime secrets from Doppler on the **Developer (free)** plan without placing them in GitHub Actions, container images, release manifests, source control, or persistent VPS environment variables. It replaces the earlier, unreleased Infisical design ([provider change](#provider-change-from-infisical)).
 
@@ -9,7 +9,7 @@ This document set defines how applications deployed by the toolkit obtain long-l
 | [Architecture](architecture.md) (this file) | Verified Doppler capabilities, hierarchy, isolation analysis, delivery model, GitHub Actions boundary |
 | [Secret inventory](secret-inventory.md) | Verified and planned secrets in the reference templates, consumers, proposed configs, rotation impact |
 | [Access policy](access-policy.md) | Service-token model, allocation, human access, Free-plan limits and compensating controls |
-| [VPS bootstrap and delivery](vps-bootstrap.md) | Token bootstrap, host layout, retrieval, atomic file delivery, failure behavior (specification for DEVOPS-007) |
+| [VPS bootstrap and delivery](vps-bootstrap.md) | Implemented CLI contract, token bootstrap, tmpfs layout, atomic lifecycle and failure behavior |
 | [Rotation and revocation](rotation-and-revocation.md) | Routine rotation and emergency runbooks |
 | [Audit and threat model](audit-and-threat-model.md) | Audit sources, access reviews, threats, controls, residual risk |
 
@@ -19,7 +19,7 @@ This document set defines how applications deployed by the toolkit obtain long-l
 - All names are placeholders: `example-backend`, `example-frontend`, `vps01`. No real identifiers or values appear anywhere.
 - *Application* means one independently deployed Compose stack, normally one repository. It corresponds to the toolkit `stack-name` without its environment suffix.
 - *Service* means a Compose service name (for example `webapi`, `database-migrator`). Runtime secrets belong to running services, and some services (for example a telemetry collector) are not toolkit-published image components.
-- Host-side names (`runtime-secrets-*` units, `/var/lib/runtime-secrets`) are provider-neutral on purpose. Only the retrieval step is Doppler-specific, so the delivery contract seen by Compose and applications does not change with the provider.
+- Host-side names (`runtime-secrets-*` units, `/run/runtime-secrets`) stay application agnostic. The retrieval adapter is deliberately Doppler-specific; this ticket does not create a speculative multi-provider framework.
 
 ## Goals and non-goals
 
@@ -33,7 +33,7 @@ Goals:
 6. A design the toolkit can implement once and reuse for future applications without knowing their configuration schema.
 7. Achievable on the Doppler Developer plan, with every paid-only gap named and compensated.
 
-Non-goals for DEVOPS-006: creating Doppler resources, issuing tokens, migrating credentials, implementing the delivery helper (DEVOPS-007), changing workflows or manifest schemas, changing the templates, adding Doppler SDKs to applications, and a generic multi-provider secrets framework.
+Non-goals for DEVOPS-007: creating Doppler resources, migrating real credentials, changing deployment workflows or application templates, adding Doppler SDKs to applications, and a generic multi-provider framework.
 
 ## Verified Doppler capabilities (Developer plan)
 
@@ -119,7 +119,7 @@ Rules:
 
 The workplace keeps Doppler's default **Classic** naming: secret names may contain only uppercase letters, digits, and underscores, and may not start with a digit (Verified). Mixed-case names such as `ConnectionStrings__PostgresWrite` are rejected under Classic.
 
-The toolkit convention is therefore an upper-case name with `__` as the hierarchy separator, for example `CONNECTIONSTRINGS__POSTGRESWRITE`. .NET configuration keys are case-insensitive, so the delivered file binds to `ConnectionStrings:PostgresWrite` without code changes ([.NET configuration](vps-bootstrap.md#net-configuration)). The **Permissive** naming mode is not used: it is a workplace-wide switch, and keeping Classic makes the delivery helper's file-name validation simple and strict.
+The toolkit convention is therefore an upper-case name with `__` as the hierarchy separator, for example `CONNECTIONSTRINGS__POSTGRESWRITE`. A future .NET adoption ticket can bind that file through `AddKeyPerFile`; DEVOPS-007 does not modify application code. The **Permissive** naming mode is not used: it is a workplace-wide switch, and keeping Classic makes file-name validation simple and strict.
 
 ### Isolation analysis
 
@@ -198,7 +198,7 @@ flowchart LR
     end
 ```
 
-1. The secrets administrator issues one read-only service token per service config per host, with an expiry, and installs it on that host as an encrypted systemd credential ([bootstrap](vps-bootstrap.md#installing-a-service-token)).
+1. The secrets administrator issues one read-only service token per service config per host, with an expiry, and installs it as an encrypted systemd credential ([bootstrap](vps-bootstrap.md#install-or-replace-a-token)).
 2. At deployment, or on an explicit refresh, the host runs one short-lived render unit per service as an unprivileged user. It downloads only that config's secrets, validates them against the application-owned key list, and writes one file per key into a new *generation* directory. No fallback file or cache is written.
 3. Activation is an atomic symlink swap. Compose bind-mounts the service's `current` generation read-only at the fixed in-container path `/run/secrets/app`.
 4. The application loads the directory with a standard file-based configuration provider (.NET `KeyPerFile`) and validates required keys at startup. No Doppler SDK or CLI is present in any image.
@@ -226,8 +226,8 @@ Doppler's Docker Compose guide offers two patterns. Neither is the default here:
 Implications for the planned workflows (their public contracts in [workflow-contracts.md](../workflow-contracts.md) are unchanged by this ticket):
 
 - `docker-publish.yml` gains no Doppler inputs or secrets. Images contain no secret values and no Doppler CLI.
-- The future `vps-deploy.yml` triggers fixed host units for the stack and environment it already validates, through a narrow sudoers rule. It receives only exit status and sanitized metadata. A render failure fails the deployment **before** migration or service changes ([deployment ordering](vps-bootstrap.md#deployment-ordering)).
-- The future `vps-rollback.yml` restores image digests and keeps the **current** secret generation by default ([rollback behavior](vps-bootstrap.md#rollback-behavior)).
+- The future `vps-deploy.yml` triggers fixed host units through a narrow sudoers rule and receives only exit status and sanitized metadata. A render failure must occur before migration or service changes; activation requires recreation and health checking.
+- The future `vps-rollback.yml` restores image digests and keeps the **current** secret generation by default. Explicit `restore` is available when deployment health recovery must restore the retained predecessor.
 - If a contract input is ever needed for rendering, it is added as an optional input in the deploy ticket and classified under [versioning](../versioning.md).
 
 **Residual risk:** the deploy account can run Docker, which is equivalent to root on the host. A stolen deploy key, or a compromised workflow that holds it, can read secret files on the host even though GitHub Actions never receives values ([threat model](audit-and-threat-model.md#t12-compromised-github-actions-deployment-path)).
@@ -238,7 +238,7 @@ Verified in the reference templates on 2026-11-21 (backend commit `81343c0`, fro
 
 | Finding | Impact | Required follow-up |
 | --- | --- | --- |
-| No backend configuration source reads files; all four deployables use host-builder defaults | Key-per-file delivery needs one `AddKeyPerFile` registration per deployable | Template change ([.NET configuration](vps-bootstrap.md#net-configuration)) |
+| No backend configuration source reads files; all four deployables use host-builder defaults | Key-per-file delivery needs one `AddKeyPerFile` registration per deployable | Future application adoption ticket (DEVOPS-008) |
 | `JwtOptions.SigningKey` has a hardcoded default, and `docker-compose.yml` sets `Jwt__SigningKey` as a literal | A missing secret silently falls back to a known key | Remove the default, fail at startup, remove the Compose literal |
 | `GITHUB_USERNAME`/`GITHUB_PAT` are passed as **runtime** environment to all four application containers | A package-read token is exposed at runtime | Keep them as BuildKit build secrets only |
 | `database-migrator` and the API share `ConnectionStrings:PostgresWrite`, which needs `CREATE DATABASE` and DDL rights | API compromise grants schema modification | Separate database roles ([inventory](secret-inventory.md#postgresql)) |
@@ -268,16 +268,16 @@ Reusable guidance kept from the earlier draft: host layout, atomic generations, 
 | Ticket | Depends on this design for |
 | --- | --- |
 | Doppler provisioning (secrets administrator) | Workplace settings, projects, configs, locked empty roots, token issuance, naming |
-| **DEVOPS-007** host secret delivery | Render helper, systemd units, host layout, key allowlist, validation, tests ([VPS bootstrap and delivery](vps-bootstrap.md)) |
+| **DEVOPS-007** host secret delivery | **Implemented:** render helper, systemd units, tmpfs layout, key allowlist, validation and tests ([VPS bootstrap and delivery](vps-bootstrap.md)) |
 | **DEVOPS-008** (deployment integration; indicative) | Render trigger, failure ordering, ephemeral migrator secrets, generation IDs in history, rollback policy |
 | Template changes (backend, frontend) | Key-per-file loading, JWT default removal, migrator exit, separate database roles, PAT removal, key allowlist files |
 | Server provisioning | Users, groups, directories, egress rules, backup exclusions, systemd version |
 
-Until those tickets land, applications continue to use their current configuration mechanisms.
+Until the application and deployment tickets land, applications continue to use their current configuration mechanisms; the host primitive is not automatic adoption.
 
 ## Sources and verification
 
-Verified 2026-11-21 against official Doppler sources. Some CLI flag details were confirmed in Doppler's official CLI source (`DopplerHQ/cli`) rather than the documentation. DEVOPS-007 must re-check exact flags against the pinned CLI version.
+Verified 2026-11-21 against official Doppler sources. DEVOPS-007 pins CLI 3.77.0 and uses the verified `secrets download --no-file --no-fallback --format json` contract.
 
 - Pricing: <https://www.doppler.com/pricing>
 - Platform limits: <https://docs.doppler.com/docs/platform-limits>
