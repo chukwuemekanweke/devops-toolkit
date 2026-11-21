@@ -1,6 +1,7 @@
-# Illustrative caller only. The referenced reusable workflows are planned and
-# do not exist until subsequent implementation tickets are complete.
-name: Next.js CI and images
+# The verification job is runnable while developing DEVOPS-004. Replace the
+# feature branch with a validated immutable release tag or full commit SHA for
+# production adoption. The publishing workflow remains planned and is omitted.
+name: Next.js CI
 
 on:
   pull_request:
@@ -12,6 +13,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "turbo.json"
+      - ".node-version"
       - ".github/workflows/frontend-ci.yml"
   push:
     branches: [main]
@@ -22,39 +24,38 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "turbo.json"
+      - ".node-version"
       - ".github/workflows/frontend-ci.yml"
 
 permissions: {}
 
 jobs:
-  verify-apps:
+  verify-monorepo:
     permissions:
       contents: read
-    uses: chukwuemekanweke/devops-toolkit/.github/workflows/nextjs-ci.yml@v1
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/nextjs-ci.yml@feature/devops-004-nextjs-ci
     with:
-      node-version: 22.13.0
+      node-version-file: .node-version
       pnpm-version: 11.20.0
-      working-directory: .
-      run-lint: true
-      run-typecheck: true
-      run-tests: true
-      run-build: true
       build-config-files: >-
         {
           "apps/user-portal/.env.local":"apps/user-portal/.env.example",
           "apps/admin-portal/.env.local":"apps/admin-portal/.env.example",
           "apps/public-portal/.env.local":"apps/public-portal/.env.example"
         }
+    # For private dependencies only, map a read-only token explicitly:
+    # secrets:
+    #   npm-token: ${{ secrets.NPM_READ_TOKEN }}
 
-  publish-images:
-    needs: verify-apps
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-    uses: chukwuemekanweke/devops-toolkit/.github/workflows/docker-publish.yml@v1
-    with:
-      deployment-id: ${{ github.sha }}
-      image-config-path: .github/docker-images.json
-    secrets:
-      registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
-      registry-token: ${{ secrets.DOCKERHUB_TOKEN }}
+  # A caller may use this job instead of verify-monorepo, or place selectors in
+  # a caller-owned matrix. The selector is illustrative and not toolkit-owned.
+  # verify-user-portal:
+  #   permissions:
+  #     contents: read
+  #   uses: chukwuemekanweke/devops-toolkit/.github/workflows/nextjs-ci.yml@feature/devops-004-nextjs-ci
+  #   with:
+  #     node-version-file: .node-version
+  #     pnpm-version: 11.20.0
+  #     workspace-filters: '@template/user-portal...'
+  #     build-config-files: >-
+  #       {"apps/user-portal/.env.local":"apps/user-portal/.env.example"}

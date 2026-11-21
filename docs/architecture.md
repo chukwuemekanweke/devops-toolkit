@@ -18,7 +18,7 @@ Terraform may provision future servers and prerequisites, but is not a dependenc
 
 ## Capability model
 
-The implemented .NET CI workflow and four planned reusable workflows form a pipeline without requiring a single orchestrator:
+The implemented .NET and Next.js CI workflows plus three planned delivery workflows form a pipeline without requiring a single orchestrator:
 
 ```text
 dotnet-ci / nextjs-ci

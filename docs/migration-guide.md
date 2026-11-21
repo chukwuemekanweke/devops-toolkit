@@ -1,6 +1,6 @@
 # Consumer migration guide
 
-The `.NET CI` workflow is implemented. Publishing, deployment, rollback, and Next.js CI remain planned, so only the .NET verification portion of the example is currently runnable. No `v1` release alias exists yet.
+The `.NET CI` and Next.js CI workflows are implemented. Publishing, deployment, and rollback remain planned. No `v1` release alias exists yet.
 
 ## General migration
 
@@ -36,6 +36,15 @@ The `.NET CI` workflow is implemented. Publishing, deployment, rollback, and Nex
 Patch/minor updates within a major should first run on a feature branch against the repository's normal CI scenarios. Read every changelog entry since the pinned version. Major upgrades require the release-specific mapping of workflow names, inputs, secrets, permissions, output/manifest formats, and changed behavior; deploy and rollback must be rehearsed outside production.
 
 Do not delete historical manifests when upgrading toolkit code. Confirm the new reader supports the recorded schema or complete the documented remote-state migration first.
+
+## Adopting Next.js CI before the first release
+
+1. Keep the template's existing `.github/workflows/frontend-ci.yml` active while testing a thin caller on a feature branch.
+2. Point the caller at `feature/devops-004-nextjs-ci` only for development smoke testing, or at an immutable feature commit after it has been pushed. Do not use `@main` or an uncreated `@v1` alias.
+3. Prefer `node-version-file: .node-version`, set `pnpm-version` to the exact root `packageManager` version, and copy only checked-in non-secret examples through `build-config-files`.
+4. First compare a full monorepo run with the existing workflow. Then exercise a caller-owned matrix or a single selector such as `@template/user-portal...` and confirm its required workspace dependencies remain selected.
+5. If private packages are required, grant the caller only the necessary read permission and explicitly map a read-only token to `npm-token`; public pull requests should not receive it.
+6. Compare lint, type-check, test, build, failure gating, and missing-config behavior. After release validation, replace the development reference with an immutable release tag or full commit SHA before removing duplicated application CI.
 
 ## Adopting .NET CI before the first release
 
