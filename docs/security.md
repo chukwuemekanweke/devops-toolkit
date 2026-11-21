@@ -15,7 +15,7 @@ Every caller grants the smallest token permission set and maps only named secret
 | Docker Hub deploy/rollback | Separate registry read token | Pull-only; stored in the protected deployment environment |
 | Future GHCR publish | `GITHUB_TOKEN` | `contents: read`, `packages: write`; do not pre-grant until supported |
 | VPS access | Host, user, private key, pinned known-hosts entry | Dedicated deploy account limited to the application directory and required Docker operations |
-| Runtime application secrets | Infisical machine identities/files (later tickets) | Service-scoped delivery on the VPS; not stored in this repository or passed as long-lived GitHub Actions deployment secrets |
+| Runtime application secrets | Doppler service token per service config per host (designed in DEVOPS-006; not yet implemented) | Read-only, expiring, scoped to one branch config; held only on the VPS as an encrypted systemd credential; values delivered as read-only service-scoped files; never stored in this repository, GitHub Actions, containers, images, or manifests |
 
 Do not use `secrets: inherit` as the normal contract. Never pass secrets as regular inputs or image-configuration values. Rotate package, registry, and SSH credentials on a defined schedule, immediately on suspected disclosure, and when maintainers lose access. Test replacement credentials before revoking the old value where safe.
 
@@ -50,6 +50,17 @@ This separation prevents code submitted in an ordinary pull request from gaining
 - The .NET CI workflow validates that `nuget-username` and `nuget-token` are paired, exposes them only as the caller's expected `GITHUB_USERNAME`/`GITHUB_PAT` restore environment variables, and never includes them in cache keys, output metadata, test diagnostics, or build artifacts.
 - Toolkit helper code used by reusable jobs is checked out from the repository and exact called-workflow commit identified by `job.workflow_repository` and `job.workflow_sha`. It never fetches helper code from the caller or the toolkit's moving default branch.
 
+## Runtime secrets
+
+The [Doppler runtime secrets design](doppler/architecture.md) separates runtime application credentials from build, publish, and deployment credentials:
+
+- GitHub Actions holds no Doppler token, service account, or application secret value. Deployment triggers host-side rendering and reads only exit status and sanitized metadata.
+- Each runtime token is read-only and scoped to one service's branch config in one environment. Root configs stay empty, and the host refuses keys outside the application-owned key list. Negative acceptance tests must prove sibling and cross-environment denial before production use ([access policy](doppler/access-policy.md)).
+- Secrets reach containers as read-only, per-service key-per-file mounts. Doppler CLI fallback files and environment injection are not used. Environment-variable delivery is a recorded exception only.
+- The Doppler Developer plan provides no IP allowlisting, no human role-based access, and 3 days of activity logs. Compensating controls (expiry and rotation, membership limited to secrets administrators, frequent review, change webhooks, host evidence) are defined in [audit and threat model](doppler/audit-and-threat-model.md).
+
+**Residual risk:** a compromised VPS root account, or a deploy account with Docker access, can read every service token and every secret delivered to containers on that host. Without IP allowlisting, stolen tokens remain usable off-host until revoked or expired. Doppler narrows the blast radius and makes rotation and revocation tractable; it does not remove the consequences of host compromise. See [rotation and revocation](doppler/rotation-and-revocation.md) for containment runbooks.
+
 ## Supply-chain controls
 
 - Pin third-party actions to reviewed full-length commit SHAs; a moving tag is not immutable.
@@ -62,7 +73,7 @@ This separation prevents code submitted in an ordinary pull request from gaining
 
 ## Production controls and audit
 
-Production environments require approvals, restricted refs, serialized deployment, immutable manifest artifacts, and a pull-only runtime registry identity. GitHub Actions deploys release identity; later Infisical components provide service runtime secrets without exposing them to the pipeline. Records capture actor, source repository/commit, toolkit ref, workflow run, environment, manifest hash, previous and new deployment IDs, timestamps, health result, rollback reason, and final outcome.
+Production environments require approvals, restricted refs, serialized deployment, immutable manifest artifacts, and a pull-only runtime registry identity. GitHub Actions deploys release identity; the host-side Doppler delivery designed in [doppler/architecture.md](doppler/architecture.md) provides service runtime secrets without exposing them to the pipeline. Records capture actor, source repository/commit, toolkit ref, workflow run, environment, manifest hash, previous and new deployment IDs, timestamps, health result, rollback reason, and final outcome.
 
 Audit records exclude secrets and should be retained both as GitHub artifacts and protected remote history. Monitoring must alert on failed deploys, failed restoration, unexpected alias movement, credential use anomalies, and repeated authentication failures.
 

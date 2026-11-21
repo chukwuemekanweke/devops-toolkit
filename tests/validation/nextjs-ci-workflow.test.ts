@@ -35,7 +35,7 @@ describe("reusable Next.js CI workflow", () => {
     expect(steps.map((step) => step.run).filter((run): run is string => typeof run === "string"))
       .not.toContain(expect.stringContaining("inputs.workspace-filters"));
     expect(source).not.toContain("secrets: inherit");
-    expect(source).not.toMatch(/dockerhub|ssh-|registry-token|infisical/iu);
+    expect(source).not.toMatch(/dockerhub|ssh-|registry-token|infisical|doppler/iu);
     expect(source).toContain("contents: read");
   });
 

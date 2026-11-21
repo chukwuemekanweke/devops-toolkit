@@ -77,11 +77,23 @@ The later deployment implementation should use a dedicated application/environme
   lock
 ```
 
-Exact layout is an implementation detail within a major version, but updates must be locked, staged, and atomically activated. Application secrets are supplied through the later Infisical service-scoped file-delivery design, mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts.
+Exact layout is an implementation detail within a major version, but updates must be locked, staged, and atomically activated. Application secrets are supplied through the [Doppler service-scoped file-delivery design](doppler/vps-bootstrap.md), mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts. Rendered secrets live outside the deployment root, under `/var/lib/runtime-secrets/<application>/<environment>/<service>/`, as immutable generations behind `current` and `previous` pointers. Deployment history records generation IDs only, never values or value hashes.
+
+## Runtime secret ordering
+
+The planned `vps-deploy.yml` implementation must follow the ordering in [VPS bootstrap and delivery](doppler/vps-bootstrap.md#deployment-ordering):
+
+1. Render every service's secrets to pending generations before migration. A render failure fails the deployment with nothing changed.
+2. Render the migrator's schema-owner credential only for the migration run, and delete it afterwards.
+3. Activate the remaining generations.
+4. Recreate the services whose generation changed.
+5. Verify health.
+
+Restore-after-failure restores the previous images and generations together. `vps-rollback.yml` restores image digests and keeps the current secret generation by default, because secrets are environment state. These are design commitments for the deployment tickets. The public workflow contracts are unchanged.
 
 ## Migration, health, and availability
 
-For the backend, the configured DatabaseMigrator image runs as a release-scoped one-shot Compose service. Its explicit successful exit is required before WebAPI, Consumer, or Jobs are released; container health alone is not proof that a migration completed. Failure blocks dependent services, records the failed attempt, and does not run an automatic reverse migration. Next.js stacks leave `migration-service` empty.
+For the backend, the configured DatabaseMigrator image runs as a release-scoped one-shot Compose service. Its explicit successful exit is required before WebAPI, Consumer, or Jobs are released; container health alone is not proof that a migration completed. Failure blocks dependent services, records the failed attempt, and does not run an automatic reverse migration. Next.js stacks leave `migration-service` empty. The current backend template's migrator keeps running after it migrates and reports success through health. It must exit with a status code before it can satisfy this contract ([template findings](doppler/architecture.md#template-findings-that-affect-adoption)).
 
 After migration, Compose service state and configured HTTP endpoints gate activation. Rollback changes application image digests only and is eligible only when the previous application remains compatible with the current database. Expand/migrate/contract schema practices preserve that window.
 
