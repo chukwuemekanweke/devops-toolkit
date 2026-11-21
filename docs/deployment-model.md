@@ -77,17 +77,17 @@ The later deployment implementation should use a dedicated application/environme
   lock
 ```
 
-Exact layout is an implementation detail within a major version, but updates must be locked, staged, and atomically activated. Application secrets are supplied through the [Doppler service-scoped file-delivery design](doppler/vps-bootstrap.md), mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts. Rendered secrets live outside the deployment root, under `/var/lib/runtime-secrets/<application>/<environment>/<service>/`, as immutable generations behind `current` and `previous` pointers. Deployment history records generation IDs only, never values or value hashes.
+Exact layout is an implementation detail within a major version, but updates must be locked, staged, and atomically activated. Application secrets are supplied through the [implemented Doppler host primitive](doppler/vps-bootstrap.md), mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts. Rendered secrets live on restricted tmpfs under `/run/runtime-secrets/<application>/<environment>/<service>/`, as immutable generations behind `pending`, `current`, and `previous`. Deployment history records generation IDs only, never values or value hashes.
 
 ## Runtime secret ordering
 
-The planned `vps-deploy.yml` implementation must follow the ordering in [VPS bootstrap and delivery](doppler/vps-bootstrap.md#deployment-ordering):
+The planned `vps-deploy.yml` implementation consumes the host CLI but owns this ordering:
 
 1. Render every service's secrets to pending generations before migration. A render failure fails the deployment with nothing changed.
 2. Render the migrator's schema-owner credential only for the migration run, and delete it afterwards.
-3. Activate the remaining generations.
-4. Recreate the services whose generation changed.
-5. Verify health.
+3. Activate remaining generations (activation itself is not a health verdict).
+4. Recreate services whose generation changed; restart alone does not retarget a bind mount.
+5. Verify application health. On failure, restore retained generations and recreate again.
 
 Restore-after-failure restores the previous images and generations together. `vps-rollback.yml` restores image digests and keeps the current secret generation by default, because secrets are environment state. These are design commitments for the deployment tickets. The public workflow contracts are unchanged.
 

@@ -23,6 +23,16 @@ describe("JSON schema validation", () => {
   });
 
   it.each([
+    ["example-backend-prd-webapi.instance.json", "runtime-secrets-instance.schema.json"],
+    ["example-backend-webapi.keys.json", "runtime-secrets-key-manifest.schema.json"],
+  ])("validates runtime secret contract %s", (document, schema) => {
+    expect(() => validator.validateDocument(
+      join(root, "examples", "runtime-secrets", document),
+      join(root, "docs", "schemas", schema),
+    )).not.toThrow();
+  });
+
+  it.each([
     ["dotnet", 4],
     ["nextjs", 3],
   ])("preserves the %s reference topology", (example, expectedCount) => {

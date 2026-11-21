@@ -1,12 +1,12 @@
 # Secret rotation and revocation
 
-Status: **Design (DEVOPS-006).** These runbooks define operating policy for the delivery mechanism specified in [VPS bootstrap and delivery](vps-bootstrap.md). They become executable once the DEVOPS-007 helper, units, and Doppler projects exist. Provider behavior marked **unverified** must be confirmed with the provider before relying on zero-downtime rotation.
+Status: **Operating policy.** The DEVOPS-007 helper and units exist; the runbooks become operational for a consumer only after its Doppler resources and host identities are provisioned. Provider behavior marked **unverified** must be confirmed before relying on zero-downtime rotation.
 
 ## Terms
 
 - **Render cycle** for a service: `runtime-secrets-render` → `runtime-secrets-activate` → `docker compose up -d --force-recreate --no-deps <service>` → health verification. For `database-migrator`, the credential is picked up at the next migration run instead ([ephemeral migrator secrets](vps-bootstrap.md#ephemeral-migrator-secrets)).
 - **Consumers** of a secret: every service config listed for it in the [secret inventory](secret-inventory.md), on every host and environment where the value is used.
-- **Evidence**: change-log entry (who, what, when, why, ticket), Doppler activity and access-log observations captured within the 3-day retention window, render `.meta` generation IDs, health results. Never secret values.
+- **Evidence**: change-log entry (who, what, when, why, ticket), Doppler activity and access-log observations captured within the 3-day retention window, render `.metadata.json` generation IDs, health results. Never secret values.
 
 ## Rotation schedule
 
@@ -27,7 +27,7 @@ Departing administrators trigger rotation of everything they could read. On the 
 1. **Plan.** From the inventory, identify consumers, environments, duplicated copies, whether the provider supports overlap, and the services to recreate. Rotate `stg` first, then `prd`.
 2. **Create** the new credential at the provider. Where the provider supports overlap, the old credential stays valid.
 3. **Write** the new value to **every** consuming service config in Doppler ([duplicated values](#duplicated-values)). Never write it to a root config.
-4. **Deliver** with a render cycle for each consumer, one service at a time. Confirm that each `.meta` shows a new generation and the expected key count.
+4. **Deliver** with a render cycle for each consumer, one service at a time. Confirm that each `.metadata.json` shows a new generation and the expected key count.
 5. **Verify** service health, and confirm at the provider that the new credential is in use (last-used timestamps, connection listing, provider logs).
 6. **Revoke** the old credential at the provider, after every consumer on every host has switched.
 7. **Verify** again, with no errors after revocation.
@@ -102,7 +102,7 @@ Create a new Grafana Cloud access-policy token, deliver to the collector (planne
 ### Doppler service token
 
 1. In Doppler, generate a **second** read-only token for the same config, named `<host>-<new date>`, with a 120-day expiry.
-2. Install it on the host, overwriting the encrypted credential file ([installation](vps-bootstrap.md#installing-a-service-token)).
+2. Install it on the host using atomic encrypted-credential replacement ([installation](vps-bootstrap.md#install-or-replace-a-token)).
 3. Run `runtime-secrets-render` for the instance. Confirm success and the scope check, then `runtime-secrets-discard` the pending generation if no delivery is needed.
 4. Revoke the old token by name in Doppler.
 5. Record the config, old and new token names, host, and dates.
@@ -116,7 +116,7 @@ The general order is: **contain first**, then **replace**, then **recover**, the
 | Phase | Actions |
 | --- | --- |
 | Detection | Alert, unexpected access-log read, provider notification, secret-scanning hit, or report |
-| Evidence capture | Screenshot or export the Doppler activity log, the affected configs' access logs, and config logs for the window, before the 3-day window closes. Preserve host journals and `.meta` files |
+| Evidence capture | Screenshot or export the Doppler activity log, the affected configs' access logs, and config logs for the window, before the 3-day window closes. Preserve host journals and `.metadata.json` files |
 | Containment | Revoke at the source of authority (provider credential, Doppler token), even if service is degraded |
 | Replacement | Issue new credentials and write them to every consuming config |
 | Recovery | Render cycles; deploy a clean host if host integrity is in doubt |
@@ -186,7 +186,7 @@ Examples: provider account compromise, account suspension with data retained, lo
 
 ## Verification after any rotation or revocation
 
-- Every consumer shows a new generation (`.meta`) and passes health checks.
+- Every consumer shows a new generation (`.metadata.json`) and passes health checks.
 - The provider shows the old credential as revoked or unused.
 - For revoked tokens: a render using the old token fails (acceptance test 8).
 - No config listed in the inventory still holds the old value.

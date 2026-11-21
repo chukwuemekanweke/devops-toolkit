@@ -20,7 +20,7 @@ This repository provides the governance and validation foundation for public con
 | `vps-deploy.yml` | Planned | Deploy a manifest to a Docker Compose VPS and verify health |
 | `vps-rollback.yml` | Planned | Restore a recorded manifest without rebuilding source |
 
-Runtime application secrets are designed, not implemented. DEVOPS-006 defines a Doppler (Developer plan) architecture: one project per application, one branch config per service, and one read-only, expiring service token per service config per host. Each VPS reads its secrets directly from Doppler and delivers them to Compose services as read-only files. GitHub Actions never receives Doppler tokens or production application secrets. The host-side delivery helper (DEVOPS-007), Doppler provisioning, and deployment integration are later tickets. See [Doppler runtime secrets](docs/doppler/architecture.md).
+DEVOPS-007 implements the host-side portion of the Doppler Developer-plan architecture: a pinned CLI adapter, strict versioned instance/key-manifest validation, isolated tmpfs key-per-file generations, atomic lifecycle commands, hardened systemd templates, and a read-only Compose contract. GitHub Actions and application containers never receive Doppler tokens or production values. Application adoption and deployment orchestration remain later tickets. See [Doppler runtime secrets](docs/doppler/architecture.md) and the [VPS operating guide](docs/doppler/vps-bootstrap.md).
 
 The toolkit validates itself on pull requests and pushes to `main` through `.github/workflows/validate.yml`. It checks workflow syntax, YAML structure, schema fixtures, reference topologies, implemented reusable-workflow interfaces, and security invariants. It is a repository maintenance workflow, not a public reusable capability.
 
@@ -41,10 +41,12 @@ The toolkit validates itself on pull requests and pushes to `main` through `.git
 actions/             Composite actions only when step-level reuse is justified
 src/validation/      TypeScript repository, contract, schema, and security validation
 scripts/             Small, testable helpers used by workflows
+systemd/             Runtime-secret unit templates and host policy examples
 tests/               Vitest suites and positive/negative schema fixtures
 examples/
   dotnet/            Thin .NET caller examples
   nextjs/            Thin pnpm/Next.js caller examples
+  runtime-secrets/   Application-owned host and Compose contract example
 docs/                Architecture, contracts, security, and operating policy
 ```
 
@@ -87,6 +89,7 @@ Never use `secrets: inherit` as the default. Map only the secrets named by the s
   - [VPS bootstrap and runtime delivery](docs/doppler/vps-bootstrap.md)
   - [Rotation and revocation](docs/doppler/rotation-and-revocation.md)
   - [Audit and threat model](docs/doppler/audit-and-threat-model.md)
+- [Runtime-secret example](examples/runtime-secrets/README.md)
 - [Versioning and compatibility](docs/versioning.md)
 - [Consumer migration guide](docs/migration-guide.md)
 - [Repository validation and contribution](docs/repository-validation.md)

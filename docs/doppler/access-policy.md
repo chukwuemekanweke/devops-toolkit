@@ -1,6 +1,6 @@
 # Access policy and service tokens
 
-Status: **Design (DEVOPS-006).** No tokens, projects, or memberships exist yet. Product behavior marked *Verified* was checked against official Doppler documentation on 2026-11-21 ([sources](architecture.md#sources-and-verification)). Everything else is proposed policy.
+Status: **Operating policy for the implemented host primitive.** No real tokens, projects, or memberships are created by this repository. Product behavior marked *Verified* was checked against official Doppler documentation on 2026-11-21 ([sources](architecture.md#sources-and-verification)).
 
 ## Machine credential: Doppler service tokens
 
@@ -41,7 +41,7 @@ Doppler warns against using CLI tokens (`dp.ct.`) or personal tokens (`dp.pt.`) 
 | Access | Read (default). Write access is never selected |
 | Expiry | Hard expiry of **120 days**, rotated every **90 days**. The exact `--max-age` syntax and the maximum allowed value must be confirmed at provisioning |
 | Holder | One host. Never copied to a second host, a workstation, GitHub, a container, an image, or a release artifact |
-| Storage | Encrypted systemd credential, root-owned ([bootstrap](vps-bootstrap.md#installing-a-service-token)) |
+| Storage | Encrypted systemd credential, root-owned ([bootstrap](vps-bootstrap.md#install-or-replace-a-token)) |
 
 Why per service when one host renders every service? Each service has its own systemd credential and its own render run. A token exposed through a misconfiguration, a backup, or an operator's terminal then exposes only one service. Revoking one service's token on one host does not interrupt the others. Doppler access logs identify which token, and therefore which service and host, read a secret. Separate tokens do **not** protect against host root compromise, which can read every token on the host ([threat model](audit-and-threat-model.md#t4-compromised-vps-root-account)).
 

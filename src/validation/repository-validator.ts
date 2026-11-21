@@ -13,7 +13,7 @@ const plannedWorkflows = new Set([
   "vps-deploy.yml",
   "vps-rollback.yml",
 ]);
-const scanExtensions = new Set([".md", ".ts", ".json", ".yml", ".yaml", ".txt"]);
+const scanExtensions = new Set([".md", ".ts", ".mjs", ".json", ".yml", ".yaml", ".txt", ".service", ".mount", ".sudoers", ".sh"]);
 const excludedDirectories = new Set([".git", "node_modules", "coverage", "dist"]);
 const secretPatterns: readonly [string, RegExp][] = [
   ["private key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u],
@@ -73,6 +73,19 @@ export class RepositoryValidator {
     ].forEach((path) => {
       capture(errors, () => this.jsonValidator.validateDocument(path, schema));
     });
+
+    capture(errors, () =>
+      this.jsonValidator.validateDocument(
+        join(repositoryRoot, "examples", "runtime-secrets", "example-backend-prd-webapi.instance.json"),
+        join(repositoryRoot, "docs", "schemas", "runtime-secrets-instance.schema.json"),
+      ),
+    );
+    capture(errors, () =>
+      this.jsonValidator.validateDocument(
+        join(repositoryRoot, "examples", "runtime-secrets", "example-backend-webapi.keys.json"),
+        join(repositoryRoot, "docs", "schemas", "runtime-secrets-key-manifest.schema.json"),
+      ),
+    );
 
     files
       .filter((path) => scanExtensions.has(extname(path).toLowerCase()))

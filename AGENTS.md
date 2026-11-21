@@ -27,6 +27,14 @@ This repository publishes public CI/CD contracts. Treat workflow filenames, inpu
 
 Do not create placeholder workflows that report success. A workflow file is added only when its capability is implemented and testable.
 
+## Runtime-secret contracts
+
+- Treat the version-1 instance and key-manifest schemas, CLI commands/categories, `/run/runtime-secrets` layout, and `/run/secrets/app` target as public contracts.
+- Default generations are tmpfs-only. Do not reintroduce persistent plaintext, Doppler fallback files, `doppler run`, container/pipeline tokens, secret environment variables, or automatic stale fallback.
+- Preserve service isolation, key allowlisting, provider scope checks, no-follow/exclusive writes, atomic pointers, conservative explicit pruning, and fail-closed boot ordering.
+- Activation is not application-health validation. Existing bind mounts change only after container recreation; deployment orchestration remains outside the host helper.
+- Linux-only security behavior must have an explicit runnable harness and must never be reported as passing when skipped.
+
 ## Local validation
 
 Install the locked Node.js 22 dependencies, then run:
