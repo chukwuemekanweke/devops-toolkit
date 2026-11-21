@@ -26,3 +26,16 @@ This repository publishes public CI/CD contracts. Treat workflow filenames, inpu
 - Add an entry under `CHANGELOG.md` > `Unreleased` for user-visible changes.
 
 Do not create placeholder workflows that report success. A workflow file is added only when its capability is implemented and testable.
+
+## Local validation
+
+Install the locked Node.js 22 dependencies, then run:
+
+```text
+npm ci
+npm run typecheck
+npm test
+npm run validate
+```
+
+Run `actionlint` against `.github/workflows/` after changing workflow YAML. The repository validation workflow uses a reviewed wrapper pinned to a full commit SHA; the wrapper runs a digest-pinned actionlint container.

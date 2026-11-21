@@ -1,6 +1,6 @@
 # Illustrative Next.js consumer
 
-These files model future content in `nextjs-project-template`; they are not functional until the reusable workflows are implemented.
+These files model future content in `nextjs-project-template`; they are schema-validated by this repository but are not runnable until the reusable workflows are implemented.
 
 - `ci.yml` preserves caller-owned monorepo path filters, invokes shared pnpm lint/type-check/test/build behavior, copies the three checked-in safe `.env.example` files for the build, and publishes only after successful verification on a main-branch push.
 - `docker-images.json` is proposed application-owned `.github/docker-images.json` content for User, Admin, and Public portals using verified current Dockerfile paths.

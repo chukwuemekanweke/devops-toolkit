@@ -64,3 +64,9 @@ Production environments require approvals, restricted refs, serialized deploymen
 Audit records exclude secrets and should be retained both as GitHub artifacts and protected remote history. Monitoring must alert on failed deploys, failed restoration, unexpected alias movement, credential use anomalies, and repeated authentication failures.
 
 If a workflow supply-chain compromise is suspected, stop alias advancement, disable affected workflows/environments, rotate exposed credentials, identify consumers and runs from audit logs, publish an advisory/fixed immutable release, and require consumers to pin the safe SHA or tag before resuming.
+
+## Repository validation controls
+
+The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
+
+Automation does not replace review of an Action's source and release notes, credential scope, whether a permission is operationally necessary, shell argument construction that is indirect, or the trustworthiness of test fixtures. Pull requests changing workflows, dependencies, permissions, secrets, schemas, or deployment behavior must record that manual review and testing evidence.

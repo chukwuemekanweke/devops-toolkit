@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "images": [
+    {
+      "component": "api",
+      "image": "docker.io/example/example-api",
+      "dockerfile": "src/Example.Api/Dockerfile"
+    },
+    {
+      "component": "api",
+      "image": "docker.io/example/example-api-two",
+      "dockerfile": "src/Example.Api.Two/Dockerfile"
+    }
+  ]
+}
+

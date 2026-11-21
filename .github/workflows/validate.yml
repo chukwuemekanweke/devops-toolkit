@@ -1,0 +1,43 @@
+name: Validate toolkit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Syntax, contracts, schemas, and security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out toolkit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install validation dependencies
+        run: npm ci
+
+      - name: Type-check validation code
+        run: npm run typecheck
+
+      - name: Run validation tests
+        run: npm test
+
+      - name: Validate repository policy
+        run: npm run validate
+
+      - name: Validate GitHub Actions workflows
+        uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4 # v0.1.13
+

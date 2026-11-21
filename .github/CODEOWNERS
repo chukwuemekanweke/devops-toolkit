@@ -1,0 +1,11 @@
+# CODEOWNERS identifies the reviewer responsible for public toolkit contracts.
+# Enforcement is configured separately through branch-protection review settings.
+/.github/workflows/ @chukwuemekanweke
+/actions/ @chukwuemekanweke
+/src/ @chukwuemekanweke
+/tests/ @chukwuemekanweke
+/docs/schemas/ @chukwuemekanweke
+/docs/security.md @chukwuemekanweke
+/docs/versioning.md @chukwuemekanweke
+/docs/workflow-contracts.md @chukwuemekanweke
+

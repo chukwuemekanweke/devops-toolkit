@@ -10,7 +10,7 @@ The initial consumers are:
 
 ## Status
 
-This repository currently defines architecture and public contracts only. The five workflows below are **planned and not implemented yet**. Example callers are illustrative and will not run until later tickets add the corresponding files under `.github/workflows/`.
+This repository currently provides the governance and validation foundation for the public contracts. The five capability workflows below are **planned and not implemented yet**. Example callers are illustrative and will not run until later tickets add the corresponding files under `.github/workflows/`.
 
 | Planned workflow | Capability |
 | --- | --- |
@@ -19,6 +19,8 @@ This repository currently defines architecture and public contracts only. The fi
 | `docker-publish.yml` | Build and publish one or many images and produce an immutable release manifest |
 | `vps-deploy.yml` | Deploy a manifest to a Docker Compose VPS and verify health |
 | `vps-rollback.yml` | Restore a recorded manifest without rebuilding source |
+
+The toolkit validates itself on pull requests and pushes to `main` through `.github/workflows/validate.yml`. It checks workflow syntax, YAML structure, schema fixtures, reference topologies, implemented reusable-workflow interfaces, and security invariants. It is a repository maintenance workflow, not a public reusable capability.
 
 ## Design principles
 
@@ -33,9 +35,11 @@ This repository currently defines architecture and public contracts only. The fi
 ## Repository layout
 
 ```text
-.github/workflows/   Reusable workflow implementations (added by later tickets)
+.github/workflows/   Repository validation plus later reusable workflow implementations
 actions/             Composite actions only when step-level reuse is justified
+src/validation/      TypeScript repository, contract, schema, and security validation
 scripts/             Small, testable helpers used by workflows
+tests/               Vitest suites and positive/negative schema fixtures
 examples/
   dotnet/            Thin .NET caller examples
   nextjs/            Thin pnpm/Next.js caller examples
@@ -76,5 +80,7 @@ Never use `secrets: inherit` as the default. Map only the secrets named by the s
 - [Security architecture](docs/security.md)
 - [Versioning and compatibility](docs/versioning.md)
 - [Consumer migration guide](docs/migration-guide.md)
+- [Repository validation and contribution](docs/repository-validation.md)
+- [Release preparation and promotion](docs/releasing.md)
 - [.NET consumer example](examples/dotnet/README.md)
 - [Next.js consumer example](examples/nextjs/README.md)

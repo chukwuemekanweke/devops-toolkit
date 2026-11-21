@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "images": [
+    {
+      "component": "api",
+      "image": "docker.io/example/example-api",
+      "dockerfile": "src/Example.Api/Dockerfile",
+      "secret": "must-not-be-accepted"
+    }
+  ]
+}
+
