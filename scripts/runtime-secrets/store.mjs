@@ -12,16 +12,22 @@ const generationPattern = /^gen-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/u;
 const pointerNames = new Set(["current", "previous", "pending"]);
 
 export class GenerationStore {
-  constructor(instance, { now = () => new Date(), random = () => randomBytes(4).toString("hex"), beforePublish = async () => {} } = {}) {
+  constructor(instance, {
+    now = () => new Date(),
+    random = () => randomBytes(4).toString("hex"),
+    beforePublish = async () => {},
+    validateAncestors = assertSafeAncestors,
+  } = {}) {
     this.instance = instance;
     this.output = instance.outputDirectory;
     this.now = now;
     this.random = random;
     this.beforePublish = beforePublish;
+    this.validateAncestors = validateAncestors;
   }
 
   async initialize() {
-    await assertSafeAncestors(this.output);
+    await this.validateAncestors(this.output);
     let created = false;
     try {
       await mkdir(this.output, { mode: 0o700 });
@@ -101,7 +107,7 @@ export class GenerationStore {
         await this.replacePointer("pending", generation, base);
         return { operation: "render", generation, pointer: "pending", keyCount: secrets.size };
       } catch (error) {
-        if (created) await rm(path, { recursive: true, force: true });
+        if (created) await removeGeneration(path, { force: true });
         throw error;
       }
     });
@@ -151,7 +157,7 @@ export class GenerationStore {
         validateGenerationName(generation);
         if (retained.has(generation)) fail("conflict", `Generation '${generation}' is retained by a pointer`, ExitCode.CONFLICT);
         await this.assertGeneration(generation, base);
-        await rm(join(base, generation), { recursive: true });
+        await removeGeneration(join(base, generation));
         removed.push(generation);
       }
       return { operation: "prune", removed: removed.sort() };
@@ -231,6 +237,12 @@ async function writeExclusive(path, value, groupId, mode) {
   } finally {
     await handle?.close();
   }
+}
+async function removeGeneration(path, { force = false } = {}) {
+  // Published generations are immutable (0550). Explicit removal first grants
+  // the owning runtime-secrets process permission to unlink their contents.
+  await chmod(path, 0o700);
+  await rm(path, { recursive: true, force });
 }
 async function assertSafeAncestors(path) {
   let current = dirname(resolve(path));

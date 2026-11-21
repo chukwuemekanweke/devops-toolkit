@@ -1,4 +1,4 @@
-import { chmod, chown, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -34,6 +34,22 @@ async function temporaryRoot() {
   const root = join(tmpdir(), `runtime-secrets-${process.pid}-${crypto.randomUUID()}`);
   await mkdir(join(root, "example", "prd"), { recursive: true, mode: 0o755 });
   return root;
+}
+
+function temporaryStore(root: string, options = {}) {
+  return new GenerationStore(instance(root), {
+    ...options,
+    // Lifecycle tests exercise an unprivileged fixture below /tmp. Production
+    // callers retain the default root-owned ancestor validation.
+    validateAncestors: async () => undefined,
+  });
+}
+
+async function removeTemporaryRoot(root: string) {
+  const output = instance(root).outputDirectory;
+  const entries = await readdir(output, { withFileTypes: true }).catch(() => []);
+  await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => chmod(join(output, entry.name), 0o700)));
+  await rm(root, { recursive: true, force: true });
 }
 
 describe("runtime secret contracts", () => {
@@ -75,7 +91,7 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
     const root = await temporaryRoot();
     try {
       let suffix = 0;
-      const store = new GenerationStore(instance(root), { now: () => new Date("2026-11-21T12:00:00Z"), random: () => (++suffix).toString(16).padStart(8, "0") });
+      const store = temporaryStore(root, { now: () => new Date("2026-11-21T12:00:00Z"), random: () => (++suffix).toString(16).padStart(8, "0") });
       const first = await store.render(new Map([["DATABASE__PASSWORD", "first"]]));
       expect(await readFile(join(instance(root).outputDirectory, first.generation, "DATABASE__PASSWORD"), "utf8")).toBe("first");
       if (process.platform !== "win32") expect((await lstat(join(instance(root).outputDirectory, first.generation, "DATABASE__PASSWORD"))).mode & 0o777).toBe(0o440);
@@ -93,7 +109,7 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
       const result = await store.prune([second.generation]);
       expect(result.removed).toEqual([second.generation]);
       expect((await store.prune([third.generation])).removed).toEqual([third.generation]);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await removeTemporaryRoot(root); }
   });
 
   it("leaves current unchanged and removes an interrupted generation", async () => {
@@ -101,20 +117,20 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
     try {
       let fail = false;
       let suffix = 0;
-      const store = new GenerationStore(instance(root), { now: () => new Date("2026-11-21T12:00:00Z"), random: () => (++suffix).toString(16).padStart(8, "0"), beforePublish: async () => { if (fail) throw new Error("simulated interruption"); } });
+      const store = temporaryStore(root, { now: () => new Date("2026-11-21T12:00:00Z"), random: () => (++suffix).toString(16).padStart(8, "0"), beforePublish: async () => { if (fail) throw new Error("simulated interruption"); } });
       const current = await store.render(new Map([["DATABASE__PASSWORD", "stable"]]));
       await store.activate();
       fail = true;
       await expect(store.render(new Map([["DATABASE__PASSWORD", "never-published"]]))).rejects.toThrow(/interruption/u);
       expect((await store.status()).current).toBe(current.generation);
       expect((await store.status()).generations).toEqual([current.generation]);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await removeTemporaryRoot(root); }
   });
 
   it("serializes operations and rejects unsafe pointers and retained pruning", async () => {
     const root = await temporaryRoot();
     try {
-      const store = new GenerationStore(instance(root));
+      const store = temporaryStore(root);
       const active = store.withLock(async () => await new Promise((resolve) => setTimeout(resolve, 30)));
       await new Promise((resolve) => setTimeout(resolve, 5));
       await expect(store.withLock(async () => undefined)).rejects.toThrow(/operation is active/u);
@@ -124,19 +140,19 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
       await rm(join(instance(root).outputDirectory, "pending"));
       await symlink("../../unsafe", join(instance(root).outputDirectory, "pending"));
       await expect(store.status()).rejects.toThrow(/Invalid generation/u);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await removeTemporaryRoot(root); }
   });
 
   it("recovers a lock left by a terminated operation", async () => {
     const root = await temporaryRoot();
     try {
-      const store = new GenerationStore(instance(root));
+      const store = temporaryStore(root);
       await store.status();
       const lock = join(instance(root).outputDirectory, ".operation-lock");
       await mkdir(lock, { mode: 0o700 });
       await writeFile(join(lock, "owner"), "2147483647\n", { mode: 0o600 });
       await expect(store.withLock(async () => "recovered")).resolves.toBe("recovered");
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await removeTemporaryRoot(root); }
   });
 
   it("rejects incorrect existing directory permissions", async () => {
@@ -146,7 +162,14 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
       const output = instance(root).outputDirectory;
       await mkdir(output, { recursive: true, mode: 0o755 });
       await chmod(output, 0o755);
-      await expect(new GenerationStore(instance(root)).status()).rejects.toThrow(/unsafe permissions/u);
+      await expect(temporaryStore(root).status()).rejects.toThrow(/unsafe permissions/u);
+    } finally { await removeTemporaryRoot(root); }
+  });
+
+  it("keeps root-owned ancestor validation enabled by default", async () => {
+    const root = await temporaryRoot();
+    try {
+      await expect(new GenerationStore(instance(root)).status()).rejects.toThrow(/root-owned/u);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
