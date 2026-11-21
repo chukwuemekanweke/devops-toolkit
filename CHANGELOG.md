@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Reusable Next.js/pnpm monorepo CI with exact pnpm contract checks, full or filtered workspace verification, safe build-configuration copying, explicit result outputs, and optional diagnostic build artifacts.
+- Tested Next.js CI helper validation for selector argument safety, package scripts and versions, repository-contained configuration paths, artifact exclusions, failure gating, and workflow security invariants.
 - Reusable `.NET 10` CI with restore, IDE0005 formatting validation, Release build reuse, deterministic multi-project unit and Testcontainers integration testing, combined coverage, explicit verification outputs, and optional paired NuGet authentication.
 - Tested .NET CI helper validation for repository-contained paths/globs, failure aggregation, Docker-unavailable skip detection, coverage expectations, and artifact/output behavior.
 - Repository governance through CODEOWNERS, weekly GitHub Actions Dependabot updates, and a focused pull-request review checklist.
