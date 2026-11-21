@@ -67,6 +67,6 @@ If a workflow supply-chain compromise is suspected, stop alias advancement, disa
 
 ## Repository validation controls
 
-The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Actionlint is downloaded at a fixed version and verified against a reviewed SHA-256 checksum before execution.
+The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
 
 Automation does not replace review of an Action's source and release notes, credential scope, whether a permission is operationally necessary, shell argument construction that is indirect, or the trustworthiness of test fixtures. Pull requests changing workflows, dependencies, permissions, secrets, schemas, or deployment behavior must record that manual review and testing evidence.

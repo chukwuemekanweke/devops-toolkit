@@ -2,7 +2,7 @@
 # Enforcement is configured separately through branch-protection review settings.
 /.github/workflows/ @chukwuemekanweke
 /actions/ @chukwuemekanweke
-/scripts/ @chukwuemekanweke
+/src/ @chukwuemekanweke
 /tests/ @chukwuemekanweke
 /docs/schemas/ @chukwuemekanweke
 /docs/security.md @chukwuemekanweke

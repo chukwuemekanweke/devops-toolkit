@@ -37,8 +37,9 @@ The toolkit validates itself on pull requests and pushes to `main` through `.git
 ```text
 .github/workflows/   Repository validation plus later reusable workflow implementations
 actions/             Composite actions only when step-level reuse is justified
+src/validation/      TypeScript repository, contract, schema, and security validation
 scripts/             Small, testable helpers used by workflows
-tests/               Positive and negative schema/validation fixtures
+tests/               Vitest suites and positive/negative schema fixtures
 examples/
   dotnet/            Thin .NET caller examples
   nextjs/            Thin pnpm/Next.js caller examples

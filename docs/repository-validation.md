@@ -4,8 +4,8 @@
 
 `.github/workflows/validate.yml` runs for pull requests targeting `main`, pushes to `main`, and manual dispatches with only `contents: read`. It performs four independent checks:
 
-1. `actionlint` validates GitHub Actions syntax and expressions. The release archive is version-pinned and checksum-verified before execution.
-2. Python unit tests validate positive and negative fixtures against the image-configuration and deployment-manifest schemas. They also assert that the reference backend still has four images and the frontend has three.
+1. `actionlint` validates GitHub Actions syntax and expressions through a reviewed wrapper pinned to a full commit SHA. The wrapper executes a digest-pinned actionlint container.
+2. Vitest unit tests validate positive and negative fixtures against the image-configuration and deployment-manifest schemas. They also assert that the reference backend still has four images and the frontend has three.
 3. Repository validation parses YAML with duplicate-key rejection, validates both example image configurations, and enforces security rules such as full-SHA Action pins, no `pull_request_target`, no `secrets: inherit`, and no direct `${{ inputs.* }}` interpolation in `run` scripts.
 4. Every real reusable workflow is compared with the matching inputs, outputs, secrets, types, defaults, and required flags in `docs/workflow-contracts.md`. The Markdown tables remain authoritative; there is no second handwritten contract manifest.
 
@@ -13,15 +13,16 @@ Some requirements remain review responsibilities: dependency source/release-note
 
 ## Local commands
 
-Use Python 3.12 or later:
+Use Node.js 22 and the committed npm lockfile:
 
 ```text
-python -m pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v
-python scripts/validate_repository.py
+npm ci
+npm run typecheck
+npm test
+npm run validate
 ```
 
-Install and run the version of `actionlint` pinned in `.github/workflows/validate.yml`, verifying its published checksum. On Windows, the GitHub workflow remains the authoritative Linux/actionlint execution if the binary is not installed locally.
+Run actionlint locally after changing workflow YAML when the binary is available. The GitHub workflow's SHA-pinned wrapper and digest-pinned container remain the authoritative actionlint execution.
 
 ## Adding a reusable workflow
 

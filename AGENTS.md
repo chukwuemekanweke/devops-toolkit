@@ -29,12 +29,13 @@ Do not create placeholder workflows that report success. A workflow file is adde
 
 ## Local validation
 
-Install the pinned development requirements, then run:
+Install the locked Node.js 22 dependencies, then run:
 
 ```text
-python -m pip install -r requirements-dev.txt
-python -m unittest discover -s tests -v
-python scripts/validate_repository.py
+npm ci
+npm run typecheck
+npm test
+npm run validate
 ```
 
-Run `actionlint` against `.github/workflows/` after changing workflow YAML. The repository validation workflow installs a checksum-verified pinned release when it runs on GitHub.
+Run `actionlint` against `.github/workflows/` after changing workflow YAML. The repository validation workflow uses a reviewed wrapper pinned to a full commit SHA; the wrapper runs a digest-pinned actionlint container.

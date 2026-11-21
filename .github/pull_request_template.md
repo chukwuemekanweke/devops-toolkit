@@ -12,8 +12,9 @@ Describe the change and the capability it affects.
 
 ## Evidence
 
-- [ ] `python -m unittest discover -s tests -v`
-- [ ] `python scripts/validate_repository.py`
+- [ ] `npm run typecheck`
+- [ ] `npm test`
+- [ ] `npm run validate`
 - [ ] `actionlint` (or the repository validation workflow)
 - [ ] Relevant positive, negative, and consumer smoke scenarios are documented.
 - [ ] `CHANGELOG.md` and affected documentation/examples are updated.
