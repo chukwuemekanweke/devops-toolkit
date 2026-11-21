@@ -47,6 +47,8 @@ This separation prevents code submitted in an ordinary pull request from gaining
 - Send fixed package credentials directly through BuildKit secret mounts only to selected component builds. Do not serialize them into the image config, matrix artifacts, or generic secret bundles.
 - Do not place secret material in cache keys, outputs, summaries, command lines, manifests, or uploaded logs.
 - Scope caches by repository, lockfile, platform, and component. Never use a cache from an untrusted workflow as executable release output.
+- The .NET CI workflow validates that `nuget-username` and `nuget-token` are paired, exposes them only as the caller's expected `GITHUB_USERNAME`/`GITHUB_PAT` restore environment variables, and never includes them in cache keys, output metadata, test diagnostics, or build artifacts.
+- Toolkit helper code used by reusable jobs is checked out from the repository and exact called-workflow commit identified by `job.workflow_repository` and `job.workflow_sha`. It never fetches helper code from the caller or the toolkit's moving default branch.
 
 ## Supply-chain controls
 
@@ -67,6 +69,6 @@ If a workflow supply-chain compromise is suspected, stop alias advancement, disa
 
 ## Repository validation controls
 
-The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
+The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. The .NET helper also rejects absolute paths, traversal, unsupported glob syntax, path escape through symlinks, invalid configurations/diagnostic IDs, unpaired credentials, and artifact retention outside 1–90 days. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
 
 Automation does not replace review of an Action's source and release notes, credential scope, whether a permission is operationally necessary, shell argument construction that is indirect, or the trustworthiness of test fixtures. Pull requests changing workflows, dependencies, permissions, secrets, schemas, or deployment behavior must record that manual review and testing evidence.

@@ -10,15 +10,15 @@ The initial consumers are:
 
 ## Status
 
-This repository currently provides the governance and validation foundation for the public contracts. The five capability workflows below are **planned and not implemented yet**. Example callers are illustrative and will not run until later tickets add the corresponding files under `.github/workflows/`.
+This repository provides the governance and validation foundation for public contracts and the first implemented reusable capability. The remaining capabilities stay explicitly planned until their implementation tickets land.
 
-| Planned workflow | Capability |
-| --- | --- |
-| `dotnet-ci.yml` | Restore, format, build, unit test, integration test, and report coverage |
-| `nextjs-ci.yml` | Install, lint, type-check, test, and build selected pnpm workspaces |
-| `docker-publish.yml` | Build and publish one or many images and produce an immutable release manifest |
-| `vps-deploy.yml` | Deploy a manifest to a Docker Compose VPS and verify health |
-| `vps-rollback.yml` | Restore a recorded manifest without rebuilding source |
+| Workflow | Status | Capability |
+| --- | --- | --- |
+| `dotnet-ci.yml` | Implemented | Restore, format, build, unit test, Testcontainers integration test, and report coverage |
+| `nextjs-ci.yml` | Planned | Install, lint, type-check, test, and build selected pnpm workspaces |
+| `docker-publish.yml` | Planned | Build and publish one or many images and produce an immutable release manifest |
+| `vps-deploy.yml` | Planned | Deploy a manifest to a Docker Compose VPS and verify health |
+| `vps-rollback.yml` | Planned | Restore a recorded manifest without rebuilding source |
 
 The toolkit validates itself on pull requests and pushes to `main` through `.github/workflows/validate.yml`. It checks workflow syntax, YAML structure, schema fixtures, reference topologies, implemented reusable-workflow interfaces, and security invariants. It is a repository maintenance workflow, not a public reusable capability.
 
@@ -61,13 +61,14 @@ jobs:
   verify:
     permissions:
       contents: read
-    uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@v1
+    # Use a validated immutable release tag or full commit SHA when adopting.
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@<full-commit-sha>
     with:
       solution-path: Example.slnx
       dotnet-version: 10.0.x
 ```
 
-Production consumers may use the compatible mutable `@v1` alias. Consumers that need reproducible workflow code should pin an immutable `@v1.2.3` tag or full commit SHA. `@main` is not a supported production reference. See [versioning](docs/versioning.md).
+No `v1` alias has been promoted yet. During development, smoke-test the feature branch or an immutable feature commit. Adopt only a validated immutable release tag or full commit SHA; use a mutable `@v1` alias only after the documented release process creates it. `@main` is not a supported production reference. See [versioning](docs/versioning.md).
 
 Never use `secrets: inherit` as the default. Map only the secrets named by the selected workflow contract. Deployment jobs must be isolated from pull-request verification and protected by GitHub Environments. See [security](docs/security.md).
 

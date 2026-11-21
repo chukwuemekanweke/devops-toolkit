@@ -1,0 +1,552 @@
+name: Reusable .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        description: Repository-relative solution, solution filter, .slnx, or project path
+        type: string
+        required: true
+      dotnet-version:
+        description: .NET SDK version accepted by actions/setup-dotnet
+        type: string
+        required: false
+        default: 10.0.x
+      working-directory:
+        description: Repository-relative command root
+        type: string
+        required: false
+        default: .
+      build-configuration:
+        description: MSBuild configuration
+        type: string
+        required: false
+        default: Release
+      run-format:
+        description: Verify formatting before building
+        type: boolean
+        required: false
+        default: true
+      format-diagnostics:
+        description: Comma-separated diagnostic IDs; empty checks all configured formatting rules
+        type: string
+        required: false
+        default: IDE0005
+      run-unit-tests:
+        description: Run discovered unit test projects
+        type: boolean
+        required: false
+        default: true
+      unit-test-projects:
+        description: Newline-separated unit test project glob patterns
+        type: string
+        required: false
+        default: tests/unit/**/*.UnitTests.csproj
+      run-integration-tests:
+        description: Run discovered integration test projects
+        type: boolean
+        required: false
+        default: true
+      integration-test-projects:
+        description: Newline-separated integration test project glob patterns
+        type: string
+        required: false
+        default: tests/integration/**/*.IntegrationTests.csproj
+      fail-on-empty-test-set:
+        description: Fail an enabled category when it discovers no test projects
+        type: boolean
+        required: false
+        default: true
+      collect-coverage:
+        description: Collect and combine Cobertura coverage
+        type: boolean
+        required: false
+        default: true
+      upload-test-artifacts:
+        description: Upload available TRX diagnostics
+        type: boolean
+        required: false
+        default: true
+      artifact-retention-days:
+        description: Artifact retention from 1 through 90 days
+        type: number
+        required: false
+        default: 14
+    secrets:
+      nuget-username:
+        description: Optional username referenced by the caller's nuget.config
+        required: false
+      nuget-token:
+        description: Optional token paired with nuget-username
+        required: false
+    outputs:
+      build-result:
+        description: Build job result
+        value: ${{ jobs.coverage_report.outputs.build-result }}
+      unit-test-result:
+        description: Unit test job result
+        value: ${{ jobs.coverage_report.outputs.unit-test-result }}
+      integration-test-result:
+        description: Integration test job result
+        value: ${{ jobs.coverage_report.outputs.integration-test-result }}
+      verification-passed:
+        description: Whether build, enabled tests, and expected coverage succeeded
+        value: ${{ jobs.coverage_report.outputs.verification-passed }}
+      test-results-artifact:
+        description: Combined test diagnostics artifact name, or empty
+        value: ${{ jobs.coverage_report.outputs.test-results-artifact }}
+      coverage-artifact:
+        description: Combined coverage artifact name, or empty
+        value: ${{ jobs.coverage_report.outputs.coverage-artifact }}
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  NUGET_XMLDOC_MODE: skip
+
+jobs:
+  build:
+    name: Restore, format, and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Validate workflow inputs
+        id: validate
+        env:
+          SOLUTION_PATH: ${{ inputs.solution-path }}
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          BUILD_CONFIGURATION: ${{ inputs.build-configuration }}
+          FORMAT_DIAGNOSTICS: ${{ inputs.format-diagnostics }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          NUGET_USERNAME_PRESENT: ${{ secrets.nuget-username != '' }}
+          NUGET_TOKEN_PRESENT: ${{ secrets.nuget-token != '' }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs validate
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet package cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/nuget.config') }}
+          restore-keys: |
+            dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-
+
+      - name: Restore packages
+        working-directory: ${{ steps.validate.outputs.working-directory }}
+        env:
+          GITHUB_USERNAME: ${{ secrets.nuget-username }}
+          GITHUB_PAT: ${{ secrets.nuget-token }}
+          SOLUTION_PATH: ${{ steps.validate.outputs.solution-path }}
+        run: dotnet restore "$SOLUTION_PATH"
+
+      - name: Verify formatting
+        if: ${{ inputs.run-format }}
+        working-directory: ${{ steps.validate.outputs.working-directory }}
+        shell: bash
+        env:
+          DIAGNOSTICS: ${{ steps.validate.outputs.diagnostics }}
+          SOLUTION_PATH: ${{ steps.validate.outputs.solution-path }}
+        run: |
+          arguments=("$SOLUTION_PATH" style --no-restore --verify-no-changes)
+          if [[ -n "$DIAGNOSTICS" ]]; then
+            IFS=',' read -ra diagnostic_ids <<< "$DIAGNOSTICS"
+            arguments+=(--diagnostics "${diagnostic_ids[@]}")
+          fi
+          dotnet format "${arguments[@]}"
+
+      - name: Build solution
+        working-directory: ${{ steps.validate.outputs.working-directory }}
+        env:
+          BUILD_CONFIGURATION: ${{ steps.validate.outputs.configuration }}
+          SOLUTION_PATH: ${{ steps.validate.outputs.solution-path }}
+        run: dotnet build "$SOLUTION_PATH" --configuration "$BUILD_CONFIGURATION" --no-restore
+
+      - name: Stage build outputs
+        id: stage
+        env:
+          BUILD_CONFIGURATION: ${{ steps.validate.outputs.configuration }}
+          WORKING_DIRECTORY_ABSOLUTE: ${{ github.workspace }}/${{ steps.validate.outputs.working-directory }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs stage-build
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.stage.outputs.build-root }}
+          if-no-files-found: error
+          retention-days: ${{ steps.validate.outputs.retention-days }}
+
+  unit_tests:
+    name: Unit tests
+    if: ${{ inputs.run-unit-tests }}
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      project-count: ${{ steps.tests.outputs.project-count }}
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Validate workflow inputs
+        id: validate
+        env:
+          SOLUTION_PATH: ${{ inputs.solution-path }}
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          BUILD_CONFIGURATION: ${{ inputs.build-configuration }}
+          FORMAT_DIAGNOSTICS: ${{ inputs.format-diagnostics }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          NUGET_USERNAME_PRESENT: ${{ secrets.nuget-username != '' }}
+          NUGET_TOKEN_PRESENT: ${{ secrets.nuget-token != '' }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs validate
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet package cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/nuget.config') }}
+          restore-keys: |
+            dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-
+
+      - name: Restore packages
+        working-directory: ${{ steps.validate.outputs.working-directory }}
+        env:
+          GITHUB_USERNAME: ${{ secrets.nuget-username }}
+          GITHUB_PAT: ${{ secrets.nuget-token }}
+          SOLUTION_PATH: ${{ steps.validate.outputs.solution-path }}
+        run: dotnet restore "$SOLUTION_PATH"
+
+      - name: Download build outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dotnet-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/${{ steps.validate.outputs.working-directory }}
+
+      - name: Run every unit test project
+        id: tests
+        env:
+          TEST_CATEGORY: unit
+          TEST_PROJECTS: ${{ inputs.unit-test-projects }}
+          FAIL_ON_EMPTY: ${{ inputs.fail-on-empty-test-set }}
+          COLLECT_COVERAGE: ${{ inputs.collect-coverage }}
+          BUILD_CONFIGURATION: ${{ steps.validate.outputs.configuration }}
+          WORKING_DIRECTORY_ABSOLUTE: ${{ github.workspace }}/${{ steps.validate.outputs.working-directory }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs test
+
+      - name: Upload unit test diagnostics
+        if: ${{ always() && inputs.upload-test-artifacts && steps.tests.outputs.results-root != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-unit-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.tests.outputs.results-root }}
+          if-no-files-found: error
+          retention-days: ${{ steps.validate.outputs.retention-days }}
+
+      - name: Upload raw unit coverage
+        if: ${{ always() && inputs.collect-coverage && steps.tests.outputs.results-root != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-unit-coverage-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.tests.outputs.results-root }}/**/coverage.cobertura.xml
+            ${{ steps.tests.outputs.results-root }}/.coverage-marker
+          if-no-files-found: error
+          retention-days: ${{ steps.validate.outputs.retention-days }}
+
+  integration_tests:
+    name: Integration tests (Testcontainers)
+    if: ${{ inputs.run-integration-tests }}
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      project-count: ${{ steps.tests.outputs.project-count }}
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Validate workflow inputs
+        id: validate
+        env:
+          SOLUTION_PATH: ${{ inputs.solution-path }}
+          DOTNET_VERSION: ${{ inputs.dotnet-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          BUILD_CONFIGURATION: ${{ inputs.build-configuration }}
+          FORMAT_DIAGNOSTICS: ${{ inputs.format-diagnostics }}
+          ARTIFACT_RETENTION_DAYS: ${{ inputs.artifact-retention-days }}
+          NUGET_USERNAME_PRESENT: ${{ secrets.nuget-username != '' }}
+          NUGET_TOKEN_PRESENT: ${{ secrets.nuget-token != '' }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs validate
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore NuGet package cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.nuget/packages
+          key: dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', '**/nuget.config') }}
+          restore-keys: |
+            dotnet-nuget-${{ runner.os }}-${{ inputs.dotnet-version }}-
+
+      - name: Restore packages
+        working-directory: ${{ steps.validate.outputs.working-directory }}
+        env:
+          GITHUB_USERNAME: ${{ secrets.nuget-username }}
+          GITHUB_PAT: ${{ secrets.nuget-token }}
+          SOLUTION_PATH: ${{ steps.validate.outputs.solution-path }}
+        run: dotnet restore "$SOLUTION_PATH"
+
+      - name: Download build outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dotnet-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/${{ steps.validate.outputs.working-directory }}
+
+      - name: Verify Docker daemon
+        run: docker info --format '{{json .ServerVersion}}'
+
+      - name: Run every integration test project
+        id: tests
+        env:
+          TEST_CATEGORY: integration
+          TEST_PROJECTS: ${{ inputs.integration-test-projects }}
+          FAIL_ON_EMPTY: ${{ inputs.fail-on-empty-test-set }}
+          COLLECT_COVERAGE: ${{ inputs.collect-coverage }}
+          BUILD_CONFIGURATION: ${{ steps.validate.outputs.configuration }}
+          WORKING_DIRECTORY_ABSOLUTE: ${{ github.workspace }}/${{ steps.validate.outputs.working-directory }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs test
+
+      - name: Upload integration test diagnostics
+        if: ${{ always() && inputs.upload-test-artifacts && steps.tests.outputs.results-root != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-integration-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.tests.outputs.results-root }}
+          if-no-files-found: error
+          retention-days: ${{ steps.validate.outputs.retention-days }}
+
+      - name: Upload raw integration coverage
+        if: ${{ always() && inputs.collect-coverage && steps.tests.outputs.results-root != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-integration-coverage-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.tests.outputs.results-root }}/**/coverage.cobertura.xml
+            ${{ steps.tests.outputs.results-root }}/.coverage-marker
+          if-no-files-found: error
+          retention-days: ${{ steps.validate.outputs.retention-days }}
+
+  coverage_report:
+    name: Coverage and verification report
+    if: ${{ always() }}
+    needs: [build, unit_tests, integration_tests]
+    runs-on: ubuntu-latest
+    outputs:
+      build-result: ${{ steps.summary.outputs.build-result }}
+      unit-test-result: ${{ steps.summary.outputs.unit-test-result }}
+      integration-test-result: ${{ steps.summary.outputs.integration-test-result }}
+      verification-passed: ${{ steps.summary.outputs.verification-passed }}
+      test-results-artifact: ${{ steps.summary.outputs.test-results-artifact }}
+      coverage-artifact: ${{ steps.summary.outputs.coverage-artifact }}
+    steps:
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Prepare report directories
+        if: ${{ inputs.upload-test-artifacts && (needs.unit_tests.result != 'skipped' || needs.integration_tests.result != 'skipped') }}
+        env:
+          TEST_RESULTS_ROOT: ${{ runner.temp }}/dotnet-ci/combined-test-results
+        run: |
+          mkdir -p "$TEST_RESULTS_ROOT"
+          echo "Combined available .NET test diagnostics" > "$TEST_RESULTS_ROOT/.artifact-marker"
+
+      - name: Download available test diagnostics
+        id: download_diagnostics
+        if: ${{ inputs.upload-test-artifacts && (needs.unit_tests.result != 'skipped' || needs.integration_tests.result != 'skipped') }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dotnet-*-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dotnet-ci/combined-test-results
+          merge-multiple: true
+
+      - name: Upload combined test diagnostics
+        id: upload_diagnostics
+        if: ${{ inputs.upload-test-artifacts && (needs.unit_tests.result != 'skipped' || needs.integration_tests.result != 'skipped') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dotnet-ci/combined-test-results
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Download available raw coverage
+        id: download_coverage
+        if: ${{ inputs.collect-coverage && (needs.unit_tests.result != 'skipped' || needs.integration_tests.result != 'skipped') }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dotnet-*-coverage-raw-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dotnet-ci/raw-coverage
+          merge-multiple: true
+
+      - name: Set up .NET for coverage reporting
+        if: ${{ needs.build.result == 'success' && inputs.collect-coverage && (inputs.run-unit-tests || inputs.run-integration-tests) }}
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Install pinned ReportGenerator
+        id: install_reportgenerator
+        if: ${{ needs.build.result == 'success' && inputs.collect-coverage && (inputs.run-unit-tests || inputs.run-integration-tests) }}
+        continue-on-error: true
+        env:
+          TOOL_PATH: ${{ runner.temp }}/dotnet-ci/tools
+        run: dotnet tool install dotnet-reportgenerator-globaltool --tool-path "$TOOL_PATH" --version 5.6.1
+
+      - name: Generate combined coverage report
+        id: coverage
+        if: ${{ inputs.collect-coverage && (inputs.run-unit-tests || inputs.run-integration-tests) && steps.install_reportgenerator.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          COVERAGE_ROOT: ${{ runner.temp }}/dotnet-ci/raw-coverage
+          COVERAGE_REPORT_ROOT: ${{ runner.temp }}/dotnet-ci/coverage-report
+          REPORTGENERATOR: ${{ runner.temp }}/dotnet-ci/tools/reportgenerator
+          EXPECT_COVERAGE: ${{ (needs.unit_tests.result == 'success' && needs.unit_tests.outputs.project-count != '0') || (needs.integration_tests.result == 'success' && needs.integration_tests.outputs.project-count != '0') }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs coverage
+
+      - name: Upload combined coverage report
+        id: upload_coverage
+        if: ${{ steps.coverage.outcome == 'success' && steps.coverage.outputs.coverage-count != '0' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dotnet-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.coverage.outputs.coverage-report-root }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Calculate workflow outputs
+        id: summary
+        if: ${{ always() }}
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          UNIT_RESULT: ${{ needs.unit_tests.result }}
+          INTEGRATION_RESULT: ${{ needs.integration_tests.result }}
+          RUN_UNIT_TESTS: ${{ inputs.run-unit-tests }}
+          RUN_INTEGRATION_TESTS: ${{ inputs.run-integration-tests }}
+          COLLECT_COVERAGE: ${{ inputs.collect-coverage }}
+          EXPECT_COVERAGE: ${{ (needs.unit_tests.result == 'success' && needs.unit_tests.outputs.project-count != '0') || (needs.integration_tests.result == 'success' && needs.integration_tests.outputs.project-count != '0') }}
+          COVERAGE_RESULT: ${{ steps.coverage.outcome }}
+          TEST_RESULTS_UPLOAD_RESULT: ${{ steps.upload_diagnostics.outcome }}
+          COVERAGE_UPLOAD_RESULT: ${{ steps.upload_coverage.outcome }}
+          TEST_RESULTS_ARTIFACT_NAME: dotnet-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          COVERAGE_ARTIFACT_NAME: dotnet-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+        run: node .devops-toolkit-source/scripts/dotnet-ci.mjs summary
+
+      - name: Enforce verification result
+        if: ${{ steps.summary.outputs.verification-passed != 'true' }}
+        run: exit 1

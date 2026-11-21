@@ -1,6 +1,7 @@
-# Illustrative caller only. The referenced reusable workflows are planned and
-# do not exist until subsequent implementation tickets are complete.
-name: .NET CI and images
+# Development smoke caller for the implemented reusable .NET CI workflow.
+# Replace the feature branch with a validated immutable release tag or full
+# commit SHA before adoption. No v1 alias exists yet.
+name: .NET CI
 
 on:
   pull_request:
@@ -29,7 +30,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@v1
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/dotnet-ci.yml@feature/devops-003-dotnet-ci
     with:
       dotnet-version: 10.0.x
       solution-path: BackendProjectTemplate.slnx
@@ -41,23 +42,3 @@ jobs:
     secrets:
       nuget-username: ${{ secrets.GH_PKG_USERNAME }}
       nuget-token: ${{ secrets.GH_PKG_PAT }}
-
-  publish-images:
-    needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-    uses: chukwuemekanweke/devops-toolkit/.github/workflows/docker-publish.yml@v1
-    with:
-      deployment-id: ${{ github.sha }}
-      image-config-path: .github/docker-images.json
-      package-auth-components: |
-        webapi
-        consumer
-        jobs
-        migrator
-    secrets:
-      registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
-      registry-token: ${{ secrets.DOCKERHUB_TOKEN }}
-      github-packages-username: ${{ secrets.GH_PKG_USERNAME }}
-      github-packages-token: ${{ secrets.GH_PKG_PAT }}
