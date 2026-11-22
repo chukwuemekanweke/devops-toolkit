@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "composeFiles": ["deploy/compose.production.yml"],
+  "remoteDeploymentPath": "/srv/example-frontend/production",
+  "healthChecks": [
+    { "name": "user-portal", "url": "http://127.0.0.1:3001/" },
+    { "name": "admin-portal", "url": "http://127.0.0.1:3002/", "expectedStatus": [200, 307] },
+    { "name": "public-portal", "url": "http://127.0.0.1:3003/" }
+  ]
+}

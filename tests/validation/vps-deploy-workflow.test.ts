@@ -59,6 +59,18 @@ describe("vps-deploy reusable workflow", () => {
     expect(JSON.stringify(stepNamed("Deploy through the constrained host interface").env)).toContain("secrets.registry-token");
   });
 
+  it("checks out the caller before validating inputs so deploy-config-path can be read", () => {
+    const names = steps.map((step) => step.name);
+    expect(names.indexOf("Check out caller deployment configuration")).toBeLessThan(names.indexOf("Validate deployment inputs"));
+    const checkout = stepNamed("Check out caller deployment configuration");
+    expect(checkout.with).toEqual({ path: "caller", "persist-credentials": false });
+    for (const name of ["Validate deployment inputs", "Validate release and Compose files"]) {
+      const env = isObject(stepNamed(name).env) ? stepNamed(name).env as Record<string, unknown> : {};
+      expect(env.DEPLOY_CONFIG_PATH).toBe("${{ inputs.deploy-config-path }}");
+      expect(env.CALLER_WORKSPACE).toBe("${{ github.workspace }}/caller");
+    }
+  });
+
   it("loads helper code from the exact called workflow revision", () => {
     expect(source).toContain(".workflow_repository");
     expect(source).toContain(".workflow_sha");

@@ -339,6 +339,13 @@ function aggregateCommand() {
   mkdirSync(process.env.MANIFEST_DIRECTORY, { recursive: true });
   writeFileSync(resolve(process.env.MANIFEST_DIRECTORY, "deployment-manifest.json"), `${release.manifestJson}\n`);
   output("manifest-json", release.manifestJson); output("published-images", release.publishedImages);
+  if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, releaseSummary(release.manifest), { flag: "a" });
+}
+
+/** Markdown job summary of a validated release manifest: one immutable reference per component. */
+export function releaseSummary(manifest) {
+  const rows = manifest.components.map((component) => `| ${component.name} | \`${component.image}@${component.digest}\` |`);
+  return [`### Release ${manifest.deployment_id}`, "", `Source \`${manifest.source_repository}@${manifest.source_commit}\``, "", "| Component | Immutable reference |", "| --- | --- |", ...rows, ""].join("\n") + "\n";
 }
 
 const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

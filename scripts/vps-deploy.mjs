@@ -16,6 +16,7 @@ import {
   parseIntegerInput, parseServiceList, printable, selectManifestSource, validateDeploymentRequest, validateEnvironment,
   validateReleaseManifest, validateRemoteDeploymentPath, validateRequestAgainstManifest, validateStackName,
 } from "./vps-deploy/contract.mjs";
+import { applyDeployConfig, deployConfigBytes } from "./vps-deploy/config.mjs";
 
 const hostnamePattern = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/u;
 const ipv4Pattern = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/u;
@@ -47,7 +48,17 @@ function writeFailure(env, error, phase) {
   } catch { /* best effort */ }
 }
 
-export function validateInputs(env) {
+function callerWorkspace(env) {
+  return env.CALLER_WORKSPACE ?? env.GITHUB_WORKSPACE ?? process.cwd();
+}
+
+/** Inline inputs, or the deploy-config-path file's settings in their place. */
+export function resolveDeploymentSettings(env) {
+  return applyDeployConfig(env, (path) => readWorkspaceFile(callerWorkspace(env), path, deployConfigBytes, "deployment configuration"));
+}
+
+export function validateInputs(rawEnv) {
+  const env = resolveDeploymentSettings(rawEnv);
   const source = selectManifestSource(env.MANIFEST_JSON ?? "", env.MANIFEST_ARTIFACT ?? "");
   return {
     environment: validateEnvironment(env.ENVIRONMENT),
@@ -66,17 +77,17 @@ export function validateInputs(env) {
   };
 }
 
-export function readWorkspaceFile(workspace, path, maxBytes) {
+export function readWorkspaceFile(workspace, path, maxBytes, label = "compose file") {
   const root = realpathSync(workspace);
   const candidate = resolve(root, path);
-  if (!existsSync(candidate)) throw new DeployError("validation", `compose file '${printable(path)}' does not exist in the caller checkout`);
-  if (lstatSync(candidate).isSymbolicLink()) throw new DeployError("validation", `compose file '${printable(path)}' must not be a symbolic link`);
+  if (!existsSync(candidate)) throw new DeployError("validation", `${label} '${printable(path)}' does not exist in the caller checkout`);
+  if (lstatSync(candidate).isSymbolicLink()) throw new DeployError("validation", `${label} '${printable(path)}' must not be a symbolic link`);
   const actual = realpathSync(candidate);
   const inside = relative(root, actual);
-  if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) throw new DeployError("validation", `compose file '${printable(path)}' escapes the caller checkout`);
+  if (inside === "" || inside.startsWith("..") || isAbsolute(inside)) throw new DeployError("validation", `${label} '${printable(path)}' escapes the caller checkout`);
   const info = statSync(actual);
-  if (!info.isFile()) throw new DeployError("validation", `compose file '${printable(path)}' is not a regular file`);
-  if (info.size > maxBytes) throw new DeployError("validation", `compose file '${printable(path)}' exceeds ${maxBytes} bytes`);
+  if (!info.isFile()) throw new DeployError("validation", `${label} '${printable(path)}' is not a regular file`);
+  if (info.size > maxBytes) throw new DeployError("validation", `${label} '${printable(path)}' exceeds ${maxBytes} bytes`);
   return readFileSync(actual, "utf8");
 }
 
@@ -110,7 +121,7 @@ export function workflowIdentity(env) {
 export function prepareBundle(env) {
   const inputs = validateInputs(env);
   if (env.DEPLOYMENT_ID === undefined) throw new DeployError("validation", "deployment-id is required");
-  const workspace = env.CALLER_WORKSPACE ?? env.GITHUB_WORKSPACE ?? process.cwd();
+  const workspace = callerWorkspace(env);
   const composeFiles = inputs.composeFiles.map((path) => ({ path, content: readWorkspaceFile(workspace, path, limits.composeFileBytes) }));
   const request = validateDeploymentRequest({
     version: 1,

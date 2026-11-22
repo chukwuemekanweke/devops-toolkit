@@ -13,6 +13,7 @@ import {
   parseJsonStrict,
   parsePackageAuthComponents,
   parsePlatforms,
+  releaseSummary,
   stableStringify,
   validateAndNormalizeConfig,
   validateCredentialPair,
@@ -308,6 +309,13 @@ describe("release aggregation", () => {
     ["invalid digest", [{ ...result, digest: "sha256:bad", immutableReference: "docker.io/example/api@sha256:bad" }]],
     ["failed scan", [{ ...result, scan: "failed" }]],
   ])("rejects %s", (_label, results) => expect(() => aggregateRelease({ ...values, results })).toThrow());
+
+  it("summarizes the release with one immutable reference per component", () => {
+    const summary = releaseSummary(aggregateRelease(values).manifest);
+    expect(summary).toContain("### Release release-1");
+    expect(summary).toContain(`Source \`example/app@${"1".repeat(40)}\``);
+    expect(summary).toContain(`| api | \`docker.io/example/api@${digest}\` |`);
+  });
 
   it("permits explicit scan disablement", () => {
     const disabled = { ...result, scan: "disabled" };
