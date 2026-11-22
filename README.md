@@ -18,6 +18,7 @@ This repository provides the governance and validation foundation for public con
 | `nextjs-ci.yml` | Implemented | Install, lint, type-check, test, and build all or selected pnpm workspaces |
 | `docker-publish.yml` | Implemented | Validate, build, scan, and publish one or many OCI images and produce an immutable release manifest |
 | `vps-deploy.yml` | Implemented | Deploy an immutable manifest to an independent Docker Compose stack on a VPS: runtime secrets, optional one-shot migration, health verification, automatic restoration, audit history |
+| `release-config-check.yml` | Implemented | Validate image and deployment configuration on pull requests with the publish and deploy validation code, without secrets |
 | `vps-rollback.yml` | Planned | Restore a recorded manifest without rebuilding source |
 
 DEVOPS-007 implements the host-side portion of the Doppler Developer-plan architecture: a pinned CLI adapter, strict versioned instance/key-manifest validation, isolated tmpfs key-per-file generations, atomic lifecycle commands, hardened systemd templates, and a read-only Compose contract. GitHub Actions and application containers never receive Doppler tokens or production values. See [Doppler runtime secrets](docs/doppler/architecture.md) and the [VPS operating guide](docs/doppler/vps-bootstrap.md).

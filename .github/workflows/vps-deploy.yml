@@ -21,10 +21,16 @@ on:
         type: string
         required: false
         default: ""
-      compose-files:
-        description: Newline-separated repository-relative Compose files, applied in order
+      deploy-config-path:
+        description: Caller-owned deployment configuration file replacing the inline topology inputs
         type: string
-        required: true
+        required: false
+        default: ""
+      compose-files:
+        description: Newline-separated repository-relative Compose files, applied in order; required without deploy-config-path
+        type: string
+        required: false
+        default: ""
       stack-name:
         description: Compose project name of this independent stack
         type: string
@@ -35,9 +41,10 @@ on:
         required: false
         default: "{}"
       remote-deployment-path:
-        description: Absolute deployment root registered for this stack on the host
+        description: Absolute deployment root registered for this stack on the host; required without deploy-config-path
         type: string
-        required: true
+        required: false
+        default: ""
       ssh-port:
         description: Remote SSH port
         type: number
@@ -172,11 +179,19 @@ jobs:
           path: .devops-toolkit-source
           persist-credentials: false
 
+      - name: Check out caller deployment configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          persist-credentials: false
+
       - name: Validate deployment inputs
         id: inputs
         env:
           MANIFEST_JSON: ${{ inputs.manifest-json }}
           MANIFEST_ARTIFACT: ${{ inputs.manifest-artifact }}
+          CALLER_WORKSPACE: ${{ github.workspace }}/caller
+          DEPLOY_CONFIG_PATH: ${{ inputs.deploy-config-path }}
           COMPOSE_FILES: ${{ inputs.compose-files }}
           COMPONENT_SERVICE_MAP: ${{ inputs.component-service-map }}
           REMOTE_DEPLOYMENT_PATH: ${{ inputs.remote-deployment-path }}
@@ -190,12 +205,6 @@ jobs:
           TOOLKIT_REPOSITORY: ${{ steps.toolkit.outputs.repository }}
           TOOLKIT_SHA: ${{ steps.toolkit.outputs.sha }}
         run: node .devops-toolkit-source/scripts/vps-deploy.mjs inputs
-
-      - name: Check out caller Compose definitions
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: caller
-          persist-credentials: false
 
       - name: Download release manifest artifact
         if: ${{ steps.inputs.outputs.manifest-artifact != '' }}
@@ -211,6 +220,7 @@ jobs:
           MANIFEST_JSON: ${{ inputs.manifest-json }}
           MANIFEST_ARTIFACT: ${{ inputs.manifest-artifact }}
           MANIFEST_ARTIFACT_DIRECTORY: ${{ runner.temp }}/vps-deploy-manifest
+          DEPLOY_CONFIG_PATH: ${{ inputs.deploy-config-path }}
           COMPOSE_FILES: ${{ inputs.compose-files }}
           COMPONENT_SERVICE_MAP: ${{ inputs.component-service-map }}
           REMOTE_DEPLOYMENT_PATH: ${{ inputs.remote-deployment-path }}

@@ -11,6 +11,7 @@ const plannedWorkflows = new Set([
   "nextjs-ci.yml",
   "docker-publish.yml",
   "vps-deploy.yml",
+  "release-config-check.yml",
   "vps-rollback.yml",
 ]);
 const scanExtensions = new Set([".md", ".ts", ".mjs", ".json", ".yml", ".yaml", ".txt", ".service", ".mount", ".sudoers", ".sh"]);
@@ -91,6 +92,13 @@ export class RepositoryValidator {
     ["dotnet", "nextjs"].forEach((example) => {
       capture(errors, () =>
         this.jsonValidator.validateDocument(join(repositoryRoot, "examples", example, "vps-deploy-stack.json"), stackSchema),
+      );
+    });
+
+    const deployConfigSchema = join(repositoryRoot, "docs", "schemas", "vps-deploy-config.schema.json");
+    ["dotnet", "nextjs"].forEach((example) => {
+      capture(errors, () =>
+        this.jsonValidator.validateDocument(join(repositoryRoot, "examples", example, "vps-deploy-config.json"), deployConfigSchema),
       );
     });
 

@@ -232,7 +232,7 @@ Validation is split by secret boundary. Only the internal jobs changed; the work
 
 - **`prepare` (no secrets):** validates the public configuration and inputs: schema, components, Dockerfile paths, build contexts, image repositories, registry, platforms, build arguments, deployment ID, and that `package-auth-components` names known components. It records `packageAuth` for each matrix entry and exports the matrix and release metadata.
 - **Each `build_publish` matrix job:** checks package credential presence first (`docker-publish.mjs check-credentials`, given that job's `packageAuth`). This happens before Docker Hub login, immutable-tag inspection, build, or push. The credentials must be a complete pair whenever either one is supplied, and are required when the component is listed in `package-auth-components`. A failed check stops that component before it can publish. BuildKit receives the package credentials only in the authenticated build step.
-- **`aggregate` (no secrets):** writes the manifest only when every component returns a result. A component that fails, including on its credential check, therefore prevents a successful release manifest.
+- **`aggregate` (no secrets):** writes the manifest only when every component returns a result. A component that fails, including on its credential check, therefore prevents a successful release manifest. It also appends the release to the job summary: the deployment ID, source commit, and one immutable `image@digest` reference per component.
 
 Matrix jobs run independently, so publication is not atomic across components. If a public component and a package-auth component are configured and package credentials are missing, the public image can still be pushed under the release tag while the authenticated component fails. Under the write-once tag policy, retrying needs a new `deployment-id`. Through toolkit revision `4ab2e18`, credential checks ran in `prepare` and failed the whole run earlier. That placement suppressed `prepare` outputs whenever the package username also appeared in public metadata (see [security.md](security.md#secret-free-output-jobs)).
 
@@ -280,10 +280,11 @@ Deploys an already-built immutable manifest to a provisioned Linux VPS using Doc
 | `deployment-id` | string | yes | — | Must equal the manifest deployment ID |
 | `manifest-json` | string | one of manifest inputs | `""` | Inline manifest conforming to [deployment-model.md](deployment-model.md) |
 | `manifest-artifact` | string | one of manifest inputs | `""` | Canonical manifest artifact name from `docker-publish.yml`; mutually exclusive with `manifest-json` |
-| `compose-files` | string | yes | — | Newline-separated repository-relative Compose files, applied in order |
+| `deploy-config-path` | string | no | `""` | Repository-relative `.json` [deployment configuration file](#deployment-configuration-file) that replaces the inline topology inputs below |
+| `compose-files` | string | without `deploy-config-path` | `""` | Newline-separated repository-relative Compose files, applied in order |
 | `stack-name` | string | yes | — | Validated application stack/Compose project name; distinguishes independent stacks on one VPS |
 | `component-service-map` | string | no | `{}` | JSON object mapping manifest component names to Compose service names; omitted entries use the same name |
-| `remote-deployment-path` | string | yes | — | Absolute allow-listed directory dedicated to this application/environment |
+| `remote-deployment-path` | string | without `deploy-config-path` | `""` | Absolute allow-listed directory dedicated to this application/environment |
 | `ssh-port` | number | no | `22` | Remote SSH port |
 | `migration-service` | string | no | `""` | Compose one-shot service whose declared command performs forward migration; empty disables migration |
 | `migration-timeout-seconds` | number | no | `600` | Migration timeout |
@@ -306,6 +307,28 @@ Input validation, applied before any SSH connection and again on the host:
 - `migration-service`: empty, or the Compose service of a release component. `migration-timeout-seconds` 1–7200; `health-timeout-seconds` 10–3600; `ssh-port` 1–65535.
 - `health-services`: valid unique names of long-running services, excluding the migration service.
 - `health-checks`: at most 20 objects with unique `name` (`[A-Za-z0-9 ._-]`, max 64), an `http`/`https` `url` without credentials whose host the host registry allows (loopback by default), and optional `expectedStatus` given as one code or an array of codes from 100 to 599 (default `200`).
+
+### Deployment configuration file
+
+`deploy-config-path` names an application-owned JSON file, read from the caller checkout at the triggering commit, that conforms to [vps-deploy-config.schema.json](schemas/vps-deploy-config.schema.json) (version `1`). It holds the deployment topology that otherwise arrives as inline inputs, so `vps-deploy.yml` and [`release-config-check.yml`](#release-config-checkyml) read one source of truth:
+
+| Field | Replaces input |
+| --- | --- |
+| `composeFiles` (array, required) | `compose-files` |
+| `remoteDeploymentPath` (required) | `remote-deployment-path` |
+| `componentServiceMap` | `component-service-map` |
+| `migrationService` | `migration-service` |
+| `migrationTimeoutSeconds` | `migration-timeout-seconds` |
+| `healthServices` (array) | `health-services` |
+| `healthChecks` | `health-checks` |
+| `healthTimeoutSeconds` | `health-timeout-seconds` |
+| `rollbackOnHealthFailure` | `rollback-on-health-failure` |
+
+- Each field is translated into the inline input's value and validated by exactly the rules above. Omitted optional fields take the input defaults.
+- The path uses `/`, has no `.`/`..` segments, ends in `.json`, and may live under a dot directory such as `.github/`. The file must be a regular file inside the caller checkout (no symbolic links), at most 64 KiB, without duplicate keys or unknown fields.
+- When `deploy-config-path` is set, every replaced input must keep its default. A setting declared in both places fails validation before any SSH connection.
+- `environment`, `stack-name`, and `ssh-port` stay inputs. GitHub evaluates the deployment environment and the concurrency group before any step can read a file, and the SSH port belongs with the SSH secrets.
+- Without `deploy-config-path`, `compose-files` and `remote-deployment-path` are required, as before.
 
 ### Secrets
 
@@ -423,12 +446,9 @@ deploy:
     environment: production
     deployment-id: ${{ needs.publish.outputs.deployment-id }}
     manifest-json: ${{ needs.publish.outputs.manifest-json }}
-    compose-files: deploy/compose.yml
     stack-name: example-production
-    component-service-map: '{"migrator":"database-migrator"}'
-    remote-deployment-path: /srv/example/production
-    migration-service: database-migrator
-    health-checks: '[{"name":"api","url":"http://127.0.0.1:8080/health"}]'
+    # composeFiles, remoteDeploymentPath, componentServiceMap, migrationService, healthChecks, ...
+    deploy-config-path: .github/vps-deploy.production.json
   secrets:
     ssh-host: ${{ secrets.VPS_HOST }}
     ssh-user: ${{ secrets.VPS_USER }}
@@ -438,7 +458,72 @@ deploy:
     registry-token: ${{ secrets.DOCKERHUB_READ_TOKEN }}
 ```
 
-Changing remote state layout or activation/health semantics incompatibly is breaking. Adding an optional verification mode is minor-version compatible. The host stack registry schema ([vps-deploy-stack.schema.json](schemas/vps-deploy-stack.schema.json), version `1`), the forced-command/sudo interface, and the remote state layout are versioned with this workflow.
+Changing remote state layout or activation/health semantics incompatibly is breaking. Adding an optional verification mode is minor-version compatible. The host stack registry schema ([vps-deploy-stack.schema.json](schemas/vps-deploy-stack.schema.json), version `1`), the deployment configuration schema ([vps-deploy-config.schema.json](schemas/vps-deploy-config.schema.json), version `1`), the forced-command/sudo interface, and the remote state layout are versioned with this workflow. The inline topology inputs remain supported alongside `deploy-config-path`.
+
+## `release-config-check.yml`
+
+### Purpose and callers
+
+Validates an application's release configuration on every pull request, with the same code that `docker-publish.yml` and `vps-deploy.yml` run later, so a misconfiguration fails before merge instead of at publish or deploy time. It needs no secrets, registry access, GitHub Environment, or VPS, and it builds, pushes, and deploys nothing. It does need Docker Compose on the runner (present on `ubuntu-latest`) to render the Compose files. Callers run it on every event and may make publishing depend on it.
+
+### Inputs
+
+| Name | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `image-config-path` | string | no | `.github/docker-images.json` | Image configuration, as for `docker-publish.yml` |
+| `package-auth-components` | string | no | `""` | Newline-separated components that need GitHub Packages credentials, as for `docker-publish.yml`; only the component names are checked |
+| `deploy-config-path` | string | no | `""` | [Deployment configuration file](#deployment-configuration-file) passed to `vps-deploy.yml`; empty checks only the image configuration |
+| `environment` | string | no | `""` | The `environment` passed to `vps-deploy.yml`; required with `deploy-config-path` |
+| `stack-name` | string | no | `""` | The `stack-name` passed to `vps-deploy.yml`; required with `deploy-config-path` |
+| `stack-registry-path` | string | no | `""` | Optional repository copy of the host stack registry entry ([vps-deploy-stack.schema.json](schemas/vps-deploy-stack.schema.json)); enables the Compose policy check; requires `deploy-config-path` |
+| `compose-env-file` | string | no | `""` | Optional checked-in stand-in for the host `stack.env`, holding non-secret placeholder values for the variables the Compose files interpolate; requires `deploy-config-path` |
+
+### Secrets
+
+None. The workflow references no secrets, so it also runs for fork pull requests.
+
+### Permissions
+
+Minimum: `contents: read`.
+
+### Outputs
+
+None. A passing run appends a summary of the checked images and deployment to the job summary.
+
+### Execution and failure behavior
+
+The single `check` job checks out the caller and the toolkit at the exact called revision, installs the toolkit's locked runtime dependencies (`npm ci --omit=dev --ignore-scripts`, for the YAML parser the host also uses), then runs `scripts/release-config-check.mjs`:
+
+1. **Image configuration:** the `docker-publish.yml` `prepare` validation, with the caller commit as the deployment ID: schema, unique components, Docker Hub repositories, Dockerfiles and build contexts inside the checkout, build arguments, and `package-auth-components` names.
+2. **Deployment request** (with `deploy-config-path`): a release manifest is generated from the image configuration with deterministic placeholder digests and the caller repository and commit as provenance. The `vps-deploy.yml` `prepare` validation then runs against it: the configuration file, `environment`, `stack-name`, Compose file paths and sizes, the component-to-service mapping, the migration service, health services, and health checks.
+3. **Host stack registry copy** (with `stack-registry-path`): the host's registry validation, plus the host's agreement checks for the stack name, environment, deployment path, source repository, image repositories, and health-check hosts.
+4. **Compose** (with `deploy-config-path`): the host's pre-parse (no `include`, `env_file`, or host-file `extends`, `configs`, or `secrets`), then `docker compose config` exactly as the host stages it: the files as `compose-N.yml`, the placeholder-digest image override, `--project-name <stack-name>`, `compose-env-file` as `--env-file`, and every profile, with a minimal process environment so runner variables cannot leak into interpolation. The rendered model must define the migration service, and `health-services` must be long-running default-profile services.
+5. **Compose policy** (with `stack-registry-path`): the host's merged-configuration policy (`validateMergedConfig`) against the registry copy, covering release digests, digest-pinned infrastructure images, privileged mode, host namespaces, devices, capabilities, ports, bind mounts, networks, volumes, restart and `no-new-privileges` rules for secret-bearing services, and the one-shot migration service. The host derives each runtime-secret mount source from its DEVOPS-007 instance, which a pull request cannot see. Instead, each registered secret-bearing service must mount `/run/runtime-secrets/<application>/<environment>/<service>/current` with one application and environment for the whole stack, and that source is used for the remaining mount rules.
+
+The first problem fails the job with a sanitized message. A pass does not prove the deployment will succeed: the host re-validates everything with what only it has, namely its real `stack.env`, registry file, and runtime-secret instances (including the exact application and environment of each secret mount), and the images themselves (for example, that they do not run as root). A repository copy of the registry or `stack.env` can drift from the host files; the host files always win. Because the image override defines every release service, a release service missing from the Compose files is not reported as missing on the runner or on the host; with a registry copy it is caught when it is a registered secret-bearing service.
+
+### Example call
+
+```yaml
+check-release-config:
+  permissions:
+    contents: read
+  uses: chukwuemekanweke/devops-toolkit/.github/workflows/release-config-check.yml@v1
+  with:
+    image-config-path: .github/docker-images.json
+    package-auth-components: |
+      webapi
+      consumer
+      jobs
+      migrator
+    deploy-config-path: .github/vps-deploy.production.json
+    environment: production
+    stack-name: example-production
+    stack-registry-path: deploy/vps-deploy-stack.production.json
+    compose-env-file: deploy/stack.env.example
+```
+
+Pass `environment`, `stack-name`, and `deploy-config-path` with the same values as the `vps-deploy.yml` call. With `stack-registry-path`, a mismatched `environment` or `stack-name` is caught here; without it, it is caught on the host.
 
 ## `vps-rollback.yml`
 

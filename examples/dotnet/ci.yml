@@ -1,4 +1,4 @@
-# Development smoke caller for the implemented reusable .NET CI, OCI publishing, and VPS deployment workflows.
+# Development smoke caller for the implemented reusable .NET CI, release configuration check, OCI publishing, and VPS deployment workflows.
 # Replace the feature branch with a validated immutable release tag or full
 # commit SHA before adoption. No v1 alias exists yet.
 name: .NET CI
@@ -43,8 +43,29 @@ jobs:
       nuget-username: ${{ secrets.GH_PKG_USERNAME }}
       nuget-token: ${{ secrets.GH_PKG_PAT }}
 
+  # Runs on every event, without secrets: validates .github/docker-images.json,
+  # .github/vps-deploy.production.json, and the rendered production Compose file
+  # against the host policy, with the same code that publish and deploy run.
+  check-release-config:
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/release-config-check.yml@feature/release-config-check
+    with:
+      image-config-path: .github/docker-images.json
+      package-auth-components: |
+        webapi
+        consumer
+        jobs
+        migrator
+      deploy-config-path: .github/vps-deploy.production.json
+      environment: production
+      stack-name: example-backend-production
+      stack-registry-path: deploy/vps-deploy-stack.production.json
+      # Placeholder group IDs standing in for the host's stack.env (see stack.env.example).
+      compose-env-file: deploy/stack.env.example
+
   publish-images:
-    needs: verify
+    needs: [verify, check-release-config]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
@@ -76,15 +97,9 @@ jobs:
       environment: production
       deployment-id: ${{ needs.publish-images.outputs.deployment-id }}
       manifest-json: ${{ needs.publish-images.outputs.manifest-json }}
-      compose-files: deploy/compose.production.yml
       stack-name: example-backend-production
-      component-service-map: '{"migrator":"database-migrator"}'
-      remote-deployment-path: /srv/example-backend/production
-      migration-service: database-migrator
-      migration-timeout-seconds: 900
-      health-checks: '[{"name":"webapi","url":"http://127.0.0.1:8080/health"}]'
-      health-timeout-seconds: 300
-      rollback-on-health-failure: true
+      # Compose files, path, migration, and health settings (see vps-deploy-config.json).
+      deploy-config-path: .github/vps-deploy.production.json
     secrets:
       ssh-host: ${{ secrets.VPS_HOST }}
       ssh-user: ${{ secrets.VPS_DEPLOY_USER }}

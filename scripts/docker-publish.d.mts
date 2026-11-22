@@ -12,3 +12,4 @@ export function buildArgsList(buildArgs: Record<string, string>): string;
 export function createComponentResult(values: { component: string; image: string; digest: string; tag: string; platforms: string; scanEnabled: boolean; sbomEnabled: boolean; provenanceEnabled: boolean }): Record<string, unknown>;
 export function aggregateRelease(values: { normalized: string | Record<string, unknown>; results: Array<string | Record<string, unknown>>; deploymentId: string; sourceRepository: string; sourceCommit: string; buildReference: string; createdAt: string; scanImages: boolean; generateSbom?: boolean; generateProvenance?: boolean }): { manifest: Record<string, unknown>; manifestJson: string; publishedImages: string };
 export function stableStringify(value: unknown): string;
+export function releaseSummary(manifest: { deployment_id: string; source_repository: string; source_commit: string; components: Array<{ name: string; image: string; digest: string }> }): string;

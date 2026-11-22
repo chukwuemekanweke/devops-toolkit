@@ -84,7 +84,8 @@ DEVOPS-009 adds a constrained host-side execution interface rather than giving t
 
 | Layer | Owner | Responsibility |
 | --- | --- | --- |
-| `vps-deploy.yml` and `scripts/vps-deploy.mjs` | Toolkit | Validate inputs and the release manifest, transfer one JSON request over SSH with a pinned host key, and upload the sanitized audit artifact; a secret-free `report` job publishes the outputs from that artifact |
+| `vps-deploy.yml` and `scripts/vps-deploy.mjs` | Toolkit | Validate inputs (inline or from the application's deployment configuration file) and the release manifest, transfer one JSON request over SSH with a pinned host key, and upload the sanitized audit artifact; a secret-free `report` job publishes the outputs from that artifact |
+| `release-config-check.yml` and `scripts/release-config-check.mjs` | Toolkit | Run the publish and deploy validation against the application's configuration on pull requests, with placeholder digests and no secrets |
 | Forced command and sudoers rule | Host administrator (toolkit templates) | Bind each deploy key to one stack and allow only `vps-deploy-host.mjs deploy --stack <stack>` as root |
 | Host stack registry `/etc/vps-deploy/stacks/<stack>.json` | Host administrator | Authorize environment, deployment root, source repositories, image namespaces, runtime-secret instances, ports, binds, and networks |
 | `scripts/vps-deploy-host.mjs` engine | Toolkit | Lock, stage, apply the Compose policy, pull by digest, orchestrate DEVOPS-007 secrets, migrate, roll out, verify health, commit or restore |

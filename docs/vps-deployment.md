@@ -78,7 +78,7 @@ Record the host key fingerprint out of band (for example from the provider conso
 
    | Field | Meaning |
    | --- | --- |
-   | `stackName`, `environment`, `deploymentPath` | Must equal the workflow's `stack-name`, `environment`, and `remote-deployment-path` |
+   | `stackName`, `environment`, `deploymentPath` | Must equal the workflow's `stack-name`, `environment`, and `remote-deployment-path` (or the deployment configuration file's `remoteDeploymentPath`) |
    | `allowedSourceRepositories` | Repositories whose manifests may deploy here (provenance) |
    | `allowedImageRepositories` | `docker.io` namespaces (ending in `/`) or exact repositories that release components may use |
    | `runtimeSecrets.services` | Compose service → DEVOPS-007 instance id; `startAtBoot: false` for services not started at boot (the migrator) |
@@ -126,7 +126,7 @@ The pull token travels only inside the SSH stdin request and is written to a pri
 
 ## Compose ownership and policy
 
-The application repository owns its Compose files (for example `deploy/compose.production.yml`). The toolkit transfers only the files listed in `compose-files`, adds a generated image override (release components → `image@sha256:…`) and a runtime-generation label override, and runs Compose with `--project-name <stack-name>` so stacks never share a project.
+The application repository owns its Compose files (for example `deploy/compose.production.yml`). The toolkit transfers only the files listed in `compose-files` (or `composeFiles` in the [deployment configuration file](workflow-contracts.md#deployment-configuration-file)), adds a generated image override (release components → `image@sha256:…`) and a runtime-generation label override, and runs Compose with `--project-name <stack-name>` so stacks never share a project.
 
 Recommended structure: see the [backend](../examples/dotnet/compose.production.yml) and [frontend](../examples/nextjs/compose.production.yml) references.
 

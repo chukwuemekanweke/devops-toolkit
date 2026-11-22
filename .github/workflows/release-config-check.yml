@@ -1,0 +1,109 @@
+name: Reusable release configuration check
+
+on:
+  workflow_call:
+    inputs:
+      image-config-path:
+        description: Caller-owned image configuration path
+        type: string
+        required: false
+        default: .github/docker-images.json
+      package-auth-components:
+        description: Newline-separated components requiring GitHub Packages BuildKit secrets
+        type: string
+        required: false
+        default: ""
+      deploy-config-path:
+        description: Caller-owned vps-deploy configuration file; empty checks only the image configuration
+        type: string
+        required: false
+        default: ""
+      environment:
+        description: Deployment environment label passed to vps-deploy; required with deploy-config-path
+        type: string
+        required: false
+        default: ""
+      stack-name:
+        description: Stack name passed to vps-deploy; required with deploy-config-path
+        type: string
+        required: false
+        default: ""
+      stack-registry-path:
+        description: Optional repository copy of the host stack registry entry; enables the Compose policy check
+        type: string
+        required: false
+        default: ""
+      compose-env-file:
+        description: Optional checked-in, non-secret stand-in for the host stack.env used to render Compose
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check release configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # The Compose pre-parse uses the toolkit's locked YAML parser, as on the host.
+      - name: Install toolkit runtime dependencies
+        working-directory: .devops-toolkit-source
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Validate release configuration
+        env:
+          IMAGE_CONFIG_PATH: ${{ inputs.image-config-path }}
+          PACKAGE_AUTH_COMPONENTS: ${{ inputs.package-auth-components }}
+          DEPLOY_CONFIG_PATH: ${{ inputs.deploy-config-path }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          STACK_NAME: ${{ inputs.stack-name }}
+          STACK_REGISTRY_PATH: ${{ inputs.stack-registry-path }}
+          COMPOSE_ENV_FILE: ${{ inputs.compose-env-file }}
+          CALLER_WORKSPACE: ${{ github.workspace }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACTOR: ${{ github.actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          SERVER_URL: ${{ github.server_url }}
+          TOOLKIT_REPOSITORY: ${{ steps.toolkit.outputs.repository }}
+          TOOLKIT_SHA: ${{ steps.toolkit.outputs.sha }}
+        run: node .devops-toolkit-source/scripts/release-config-check.mjs
