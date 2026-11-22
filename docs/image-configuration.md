@@ -71,7 +71,7 @@ Secret values never appear in this file. Docker Hub credentials authenticate pub
 
 For the current backend, all four Dockerfiles use BuildKit secret IDs `GITHUB_USERNAME` and `GITHUB_PAT`. The implementation maps the two explicitly named workflow secrets to those IDs only for the selected component builds. The frontend Dockerfiles currently require no BuildKit secret. This fixed contract is clearer and safer than a generic secret bag or repetitive `build_secret_ids` arrays.
 
-Credentials must use BuildKit secret mounts and must not be converted to build arguments, copied into layers, included in cache metadata, echoed, or written to manifests/artifacts. A missing half of the credential pair or an unknown component in `package-auth-components` fails validation.
+Credentials must use BuildKit secret mounts and must not be converted to build arguments, copied into layers, included in cache metadata, echoed, or written to manifests/artifacts. An unknown component in `package-auth-components` fails configuration validation in the secret-free `prepare` job. A missing half of the credential pair, or missing credentials for a selected component, fails that component's credential check before registry login or publication. That check runs inside the matrix job, so the job that reads public configuration never handles credentials ([why](security.md#secret-free-output-jobs)).
 
 BuildKit cache uses the GitHub Actions cache backend with a component-specific scope when `enable-cache` is true. Cache data is an optimization and is never release evidence. The registry-resolved digest remains authoritative.
 

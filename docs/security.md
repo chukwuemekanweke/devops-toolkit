@@ -19,6 +19,16 @@ Every caller grants the smallest token permission set and maps only named secret
 
 Do not use `secrets: inherit` as the normal contract. Never pass secrets as regular inputs or image-configuration values. Rotate package, registry, and SSH credentials on a defined schedule, immediately on suspected disclosure, and when maintainers lose access. Test replacement credentials before revoking the old value where safe.
 
+## Secret-free output jobs
+
+**Jobs that export caller-controlled public metadata should not consume secrets whose values may overlap those outputs.**
+
+GitHub Actions registers every secret a job references as a masking value. It also does this for a secret that appears only in a presence expression such as `${{ secrets.x != '' }}`. At job completion the runner skips any job output that contains a registered value as a substring, and warns `Skip output '<name>' since it may contain secret`. A downstream job then receives an empty string. This happens even when the matching text is legitimately public. A package or registry username that also names the repository owner or a Docker Hub namespace hides every output that contains a repository or image name. Short SSH users such as `deploy` can hide generated identifiers too.
+
+Avoid this by assigning responsibilities, not by working around masking: do not use `::add-mask::` tricks, encode outputs, rename repositories, or drop credentials. Jobs that validate public configuration, build matrices, or aggregate results reference no `secrets.*`. Credential presence is checked in the job that uses the credential, and that job exports no public outputs. `docker-publish.yml` follows this split (`prepare` and `aggregate` are secret-free), and its workflow tests enforce it.
+
+Review job outputs whenever a workflow gains a credential or a caller-controlled output field. Known exception: the `vps-deploy.yml` `deploy` job exports its outcome outputs from the same job that consumes the SSH and registry credentials, which is tracked as a follow-up.
+
 ## Trust boundaries
 
 1. **Caller repository to toolkit:** caller code and string inputs are untrusted. The toolkit validates JSON schemas, path containment, identifiers, numeric ranges, registry hosts, and service/filter lists before use. It quotes arguments and never evaluates input as shell.
