@@ -104,6 +104,10 @@ services:
       retries: 30
       start_period: 10s
 
+  # One-shot, release-scoped migrator. The "migration" profile keeps it out of
+  # ordinary `up` and boot; vps-deploy runs it with `docker compose run` and
+  # accepts only a terminated container with exit code 0, so it must exit after
+  # migrating (nonzero on failure) and needs no healthcheck or published port.
   database-migrator:
     <<: *hardening
     profiles: ["migration"]

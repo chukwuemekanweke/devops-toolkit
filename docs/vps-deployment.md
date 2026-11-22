@@ -1,6 +1,6 @@
 # VPS deployment operations
 
-Status: **Implemented (DEVOPS-009).** This guide covers preparing a Linux VPS for `vps-deploy.yml`, the host-side execution interface, application-owned Compose requirements, health and restoration behavior, and recovery. The public workflow interface is in [workflow-contracts.md](workflow-contracts.md#vps-deployyml); runtime-secret delivery is DEVOPS-007 ([VPS runtime-secret delivery](doppler/vps-bootstrap.md)).
+Status: **Implemented (DEVOPS-009, migration safety, health gates and restoration hardened in DEVOPS-010).** This guide covers preparing a Linux VPS for `vps-deploy.yml`, the host-side execution interface, application-owned Compose requirements, health and restoration behavior, and recovery. The public workflow interface is in [workflow-contracts.md](workflow-contracts.md#vps-deployyml); runtime-secret delivery is DEVOPS-007 ([VPS runtime-secret delivery](doppler/vps-bootstrap.md)).
 
 Initial scope: one VPS, one deployment environment, several independent application stacks, Docker Compose, Docker Hub. Nothing in the engine names an environment, host, application, or path; separate Development/Staging/Production hosts later need only their own registries, credentials, and GitHub Environments.
 
@@ -19,7 +19,7 @@ send one JSON request over SSH stdin      ->   lock -> stage release -> compose 
 record outputs + sanitized audit artifact <-   commit active release + append history | restore on failure
 ```
 
-Failures before rollout (validation, staging, pull, Compose policy, secret rendering, migration) leave running containers, `current` secret generations, and the active release record untouched. Failures after rollout (activation, `compose up`, health) trigger restoration when `rollback-on-health-failure` is true and a previous release exists. The job always fails unless the new release passed health verification.
+Failures before rollout (validation, staging, pull, Compose policy, secret rendering, migration) leave running containers, `current` secret generations of long-running services, and the active release record untouched (a migration that ran may still have changed the database). Failures after rollout (activation, `compose up`, health) trigger restoration when `rollback-on-health-failure` is true and a previous release exists. The job always fails unless the new release passed health verification.
 
 ## Trust model and the constrained host interface
 
@@ -155,20 +155,79 @@ Only sanitized generation ids appear in results and history. DEVOPS-007 has no o
 
 ## Database migrations
 
-When `migration-service` is set, it must be the Compose service of a release component (so the release's migration image runs), should be in a non-default Compose profile, and must not be a dependency of long-running services. The helper runs it with `docker compose run` (its declared infrastructure dependencies start first), enforces `migration-timeout-seconds`, requires exit status `0`, and removes the container on success. A failed or timed-out migration container is retained, stopped, for `docker logs` on the host and removed by the next attempt. A healthy, still-running migrator is never treated as success.
+When `migration-service` is set, it must be the Compose service of a release component (so the release's migration image runs). It should be in a non-default Compose profile so ordinary `up` and boot never start it, and it must not be a dependency of long-running services. Empty `migration-service` skips the whole stage: no migrator container, image role, or migrator runtime secret is required (the Next.js stacks).
 
-Database compatibility: a successful forward migration cannot be undone by image restoration, and the toolkit never runs reverse migrations. Use expand/migrate/contract changes so the previous application release keeps working against the migrated schema; otherwise automatic restoration can restore images that are incompatible with the database. The [backend template's migrator](doppler/architecture.md#template-findings-that-affect-adoption) currently keeps running after migrating and must be changed to exit before it can satisfy this contract.
+The migration stage, after every image is pulled by digest and every runtime-secret generation is rendered:
+
+1. **Interrupted-run guard.** If a migrator container from an earlier deployment of the stack is still **running** (for example the helper was killed or the host restarted mid-migration), the deployment fails without stopping it or starting a second migration. Stopped leftovers are removed.
+2. **Secrets.** The migrator's pending generation is activated. Failure stops the deployment before the migrator starts.
+3. **Run.** `docker compose run` starts the service and its declared dependencies (for example a database container) and waits, bounded by `migration-timeout-seconds`. On timeout the container is killed.
+4. **Evidence.** The result comes from the container's recorded state (`docker container inspect`), not from the CLI status or a health check. Success requires that the container exists, has stopped, and recorded exit code `0`. A container that never existed, one still running (even if `healthy`), or any nonzero exit blocks rollout.
+5. **Cleanup.** On success the container is removed. A failed or timed-out container is retained, stopped, for `docker logs <stack>-migration-<attempt>` and removed by the next attempt.
+
+The result and history record `migration.status`:
+
+| Status | Meaning | Database may have changed |
+| --- | --- | --- |
+| `not-configured` | No `migration-service` | no |
+| `not-run` | Deployment failed before the migration stage | no |
+| `not-started` | Stage began but the migrator never ran: interrupted earlier migration still running, secret activation failed, or the container could not start (for example a dependency was unavailable or unhealthy) | no |
+| `failed` | The migrator ran and exited nonzero, or was still running | **yes** |
+| `timed-out` | The migrator exceeded its timeout and was killed | **yes** (if the container had started) |
+| `succeeded` | The migrator exited `0` | yes (as intended) |
+
+`migration.databaseMayHaveChanged` is `true` whenever the migrator ran. A failed migration may have applied some changes; the toolkit never reports the database as unchanged, never runs reverse migrations, and never restores database backups.
+
+### Database compatibility: expand, migrate, contract
+
+Automatic restoration ([below](#automatic-restoration)) restores **application images and runtime-secret pointers only**. A successful forward migration stays applied, so the previous application must keep working against the migrated schema. The toolkit cannot verify this; application teams own it. Structure schema changes in three separately released phases:
+
+1. **Expand.** Ship only backward-compatible additions: new tables, nullable columns or columns with defaults, new indexes (created so they do not block writes for long), and replacement columns alongside the existing ones. The currently deployed release must work unchanged against the expanded schema. This is the release in which automatic restoration is safe.
+2. **Migrate.** Deploy application code that reads and writes the new structures (dual-write where needed). Run large backfills through a controlled, resumable, idempotent mechanism (a background job or a dedicated operator task), not inside a time-bounded deployment migration that holds locks.
+3. **Contract.** Only after every release that needs the old structures is retired and outside the rollback window, remove obsolete columns, tables, and constraints in a later release.
+
+Do not bundle destructive or incompatible operations (drop/rename column, narrowing a type, adding `NOT NULL` without a default, semantic changes to existing data) into a release whose predecessor would break against them. If such a change is unavoidable, deploy it with `rollback-on-health-failure: false` and an operator-planned recovery: automatic restoration would restore an application that cannot run against the new schema.
+
+Migrations run while the previous release is still serving traffic. They should be idempotent (EF Core's history table provides this for schema migrations; custom scripts must provide it themselves), short, and careful with locks. A long `ALTER TABLE` or index build can block or time out the live application.
 
 ## Health verification
 
 Required services are `health-services`, or every long-running service (default-profile services other than the migration service) when empty. The service-state contract:
 
-- every container of the service must be `running`;
-- with a Docker health check, it must report `healthy`;
+- every container of the service must exist and be `running`;
+- with a Docker health check, it must report `healthy` (`starting` keeps waiting);
 - without one, the same container must stay `running` for a stability window of `min(10s, health-timeout-seconds / 2)`;
-- `exited`, `dead`, or `unhealthy` fails immediately.
+- `exited`, `dead`, `unhealthy`, or a Docker restart of the container during verification (restart-policy crash loop, detected from its restart count) fails immediately;
+- a missing or never-ready service fails at `health-timeout-seconds`.
 
-`health-checks` are HTTP(S) requests made **from the host** to registry-approved hosts (loopback by default) with bounded retries every 3 seconds; each must return one of its `expectedStatus` codes (default `200`; redirects are not followed). Response bodies are never read or logged. Success requires every service and check to pass in the same round before `health-timeout-seconds`.
+`health-checks` are HTTP(S) requests made **from the host** to registry-approved hosts (loopback by default) with bounded retries every 3 seconds; each must return one of its `expectedStatus` codes (default `200`; redirects are not followed). Response bodies are never read or logged; the result names the failing check and its status code only. Success requires every service and check to pass in the same round before `health-timeout-seconds`. Only then is the release committed to `active.json`; a release that fails health is never recorded as active or as the previous successful release.
+
+## Automatic restoration
+
+After a rollout failure (secret activation, `compose up`, or health) with `rollback-on-health-failure: true` and a recorded active release, the helper:
+
+1. swaps each activated runtime-secret pointer back to its previous generation (`runtime-secrets-restore`), and discards unactivated pending generations;
+2. recreates the previous release's long-running services from its retained release directory: its Compose files and its `images.override.json` with the recorded `image@sha256:` digests (never tags), `--remove-orphans`;
+3. verifies the previous release with its recorded health services, checks, and timeout;
+4. records `restoration.outcome` and keeps the job failed.
+
+Restoration never runs the migration service, a reverse migration, a schema downgrade, a backup restore, or a database cleanup. `DeploymentEngine.restore` is the reusable primitive for a future manual `vps-rollback.yml`.
+
+## Deployment outcomes and notification
+
+Every result, history line, and audit record carries `outcome`, also exposed as the `deployment-outcome` workflow output:
+
+| Outcome | Meaning | Running application |
+| --- | --- | --- |
+| `succeeded` | New release passed health and is active | New release |
+| `failed-before-rollout` | Validation, lock, staging, pull, secrets, or migration failed | Previous release, unchanged (database may have changed if the migrator ran) |
+| `restored-after-failure` | Rollout failed; previous release restored and healthy | Previous release (recreated) |
+| `restoration-failed` | Rollout failed and restoration failed | Unknown; manual recovery |
+| `failed-restoration-disabled` | Rollout failed; `rollback-on-health-failure: false` | Failed release, left for diagnosis |
+| `failed-no-previous-release` | Initial deployment failed | Failed release, left for diagnosis |
+| `unknown` | The runner received no host result (transport failure) | Check host history |
+
+Only `succeeded` passes the job. Alert delivery is caller-owned: see [Failure notification](workflow-contracts.md#failure-notification) for the outputs and a provider-neutral notification job. Notification credentials stay in the caller's GitHub secrets, never on the VPS.
 
 ## Remote state
 
@@ -197,17 +256,31 @@ Caution: `Requires=` propagates stop/restart. Restarting an initializer on a run
 
 | Situation | Action |
 | --- | --- |
-| Job failed, status `restored-after-failure` | The previous release is running and healthy. Investigate the failed release using the audit artifact and `history/deployments.jsonl`, fix, and deploy a new deployment id |
-| Restoration failed (`restoration.outcome: failed`) | Inspect `docker compose --project-name <stack> ps` and container logs on the host, and `active.json` (still the last good release). Fix the cause (for example `stack.env`, a missing image, database compatibility), then redeploy the last good deployment id through the workflow |
+| Job failed, status `restored-after-failure` | The previous release is running and healthy. Investigate the failed release using the audit artifact and `history/deployments.jsonl`, fix, and deploy a new deployment id. If the failed release's migration succeeded, the previous release is now running against the migrated schema; confirm the change was expand-only |
+| Restoration failed (`restoration.outcome: failed`) | Inspect `docker compose --project-name <stack> ps` and container logs on the host, and `active.json` (still the last good release). Fix the cause (for example `stack.env`, a missing image, database compatibility), then redeploy the last good deployment id through the workflow. If the previous release cannot run against the migrated schema, fix forward with a new release instead |
 | Failed initial deployment | Containers are left for diagnosis. Fix and redeploy; there is no release to restore |
-| Migration failed or timed out | No application container changed. Read the retained container's logs (`docker logs <stack>-migration-<attempt>`), assess database state, fix forward, redeploy |
+| Migration `not-started` | The migrator never ran. Fix the dependency, secret, or leftover container named in the failure, then redeploy |
+| Migration `failed` or `timed-out` before rollout | No application container changed, but **the database may be partially migrated**. Read the retained container's logs (`docker logs <stack>-migration-<attempt>`) and the migration history table: migrations applied before the failing one normally remain committed, and custom pre/post-deployment scripts may have run. Fix forward (a corrected, idempotent migration) and redeploy |
+| Interrupted migration still running | Do not remove it blindly. Wait for it to exit, or stop it deliberately (`docker stop`), review its logs and the database, remove it, then redeploy |
+| Deployment failed after a successful migration | Automatic restoration put back the previous images. They run against the new schema, which is safe only for expand-only changes. If the previous release misbehaves, deploy a fixed forward release |
+| Backward-incompatible schema already applied | Image restoration cannot help. Deploy a release compatible with the current schema, or perform an operator-run database restore from backup (with data-loss assessment) followed by redeploying the matching release. The toolkit never restores databases automatically |
+| Transport failure (`deployment-outcome: unknown`) | Read the last line of `history/deployments.jsonl` on the host to learn what happened before retrying. A retry with the same deployment id waits for any still-running attempt (stack lock) and re-runs the migration, which must therefore be idempotent |
 | Secret render failed | Running services are unchanged. Restore Doppler/token access ([rotation and revocation](doppler/rotation-and-revocation.md)), then redeploy |
 | Stack lock held after a crash | A lock from a previous boot or a dead process is reclaimed automatically. Otherwise confirm no deployment is running before removing `<root>/lock` |
 | Manual rollback before `vps-rollback.yml` exists | Redeploy the earlier deployment id with its recorded manifest through `vps-deploy.yml`; its manifest copy under `manifests/` guarantees identical content |
 
 ## Limitations
 
-- One host: host, Docker daemon, or reverse-proxy failure interrupts every stack; health gates reduce but do not remove deployment downtime.
+Single-VPS Docker Compose deployment is health-gated, **not zero-downtime**:
+
+- Recreating a container stops the old one before the new one serves; expect a short outage per changed service on every deployment.
+- A successful migration does not imply uninterrupted service. Migrations run against the live database and can hold locks, slow or block queries, or break the running release if not backward-compatible.
+- Health gating decides whether a release is accepted; it does not keep the old release serving while the new one starts.
+- Automatic restoration recreates containers again, causing a second interruption, and cannot recover from an incompatible schema change.
+- One host: host, Docker daemon, or reverse-proxy failure interrupts every stack. There is no high availability, failover, or blue/green capacity; those need additional infrastructure (several hosts, a load balancer, or an orchestrator) outside this toolkit.
+
+Further limitations:
+
 - The `vps-rollback.yml` workflow is not implemented yet; `DeploymentEngine.restore` is the reusable primitive for it.
 - Docker Hub is the only registry. Image signatures are not verified; digests, provenance checks, and the registry namespace allowlist are the release authority.
 - Health checks run from the host; external reachability through the reverse proxy is not verified.

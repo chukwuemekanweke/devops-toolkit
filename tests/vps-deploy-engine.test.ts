@@ -8,7 +8,7 @@ import { validateRegistry } from "../scripts/vps-deploy/registry.mjs";
 import { StackState } from "../scripts/vps-deploy/state.mjs";
 import { commit, digest, manifestObject, requestObject } from "./helpers/vps-deploy-fixtures.js";
 
-type Entry = { id: string; service: string; state: string; health: string; exitCode: number | null; oneOff: boolean };
+type Entry = { id: string; service: string; state: string; health: string; exitCode: number | null; oneOff: boolean; restartCount?: number };
 type Op = { ok: boolean; category?: string };
 
 const stack = "example-backend-production";
@@ -105,7 +105,8 @@ class FakeDocker {
   calls: unknown[][] = [];
   pullFailures = new Set<string>();
   configFailure = false;
-  migration: { timedOut: boolean; exitCode: number | null } = { timedOut: false, exitCode: 0 };
+  migration: { timedOut: boolean; exitCode: number | null; created?: boolean; running?: boolean; commandCode?: number | null } = { timedOut: false, exitCode: 0 };
+  leftoverRunningMigration = false;
   healthByDirectory = new Map<string, string>();
   running: { directory: string; generations: Record<string, string> } | null = null;
   containerId = 0;
@@ -149,14 +150,18 @@ class FakeDocker {
   async stop() { this.calls.push(["stop"]); return true; }
   async runOneShot(_project: unknown, service: string, name: string, options: { timeoutMs: number }) {
     this.calls.push(["run", service, name, options.timeoutMs]);
-    return { ...this.migration, created: true, running: false };
+    return { created: true, running: false, commandCode: this.migration.exitCode, ...this.migration };
   }
   async removeContainer(name: string) { this.calls.push(["rm", name]); return true; }
-  async oneShotContainers() { return []; }
+  async oneShotContainers(_project: string, _service: string, { running = false } = {}) {
+    return running && this.leftoverRunningMigration ? ["interrupted-migrator"] : [];
+  }
+  psOverride: ((entries: Entry[]) => Entry[]) | null = null;
   async ps(): Promise<Entry[]> {
     if (!this.running) return [];
     const health = this.healthByDirectory.get(this.running.directory) ?? this.defaultHealth;
-    return ["webapi", "worker"].map((service) => ({ id: this.ids.get(service) ?? "", service, state: "running", health: service === "webapi" ? health : "", exitCode: null, oneOff: false }));
+    const entries = ["webapi", "worker"].map((service) => ({ id: this.ids.get(service) ?? "", service, state: "running", health: service === "webapi" ? health : "", exitCode: null, oneOff: false }));
+    return this.psOverride ? this.psOverride(entries) : entries;
   }
   async generationLabels() {
     return this.running ? Object.entries(this.running.generations).map(([service, generation]) => ({ service, generation })) : [];
@@ -217,7 +222,8 @@ describe("vps-deploy engine", () => {
     const { engine, docker, secrets, root, progress } = harness();
     const result = await engine.deploy(envelope());
     expect(result.failure).toBeNull();
-    expect(result).toMatchObject({ ok: true, status: "succeeded", deployedId: commit, previousDeploymentId: "" });
+    expect(result).toMatchObject({ ok: true, status: "succeeded", outcome: "succeeded", deployedId: commit, previousDeploymentId: "" });
+    expect(result.migration).toMatchObject({ configured: true, status: "succeeded", started: true, exitCode: 0, container: "" });
     expect(progress).toEqual(["validate", "lock", "stage", "pull", "secrets", "migration", "rollout", "health", "commit"]);
     const active = readJson(join(root, "active.json"));
     expect(active).toMatchObject({ deploymentId: commit, migrationService: "database-migrator", longRunningServices: ["webapi", "worker"] });
@@ -318,21 +324,93 @@ describe("vps-deploy engine", () => {
   });
 
   it.each([
-    ["failure", { timedOut: false, exitCode: 1 }, /exited with status 1/u],
-    ["timeout", { timedOut: true, exitCode: null }, /did not finish within 600 seconds/u],
-  ])("blocks application rollout on migration %s", async (_label, migration, message) => {
-    const { engine, docker, secrets } = harness();
+    ["failure", { timedOut: false, exitCode: 1 }, "failed", /exited with status 1/u],
+    ["timeout", { timedOut: true, exitCode: null }, "timed-out", /did not finish within 600 seconds/u],
+    ["still-running (healthy) migrator", { timedOut: false, exitCode: null, running: true, commandCode: 0 }, "failed", /not a completed migration/u],
+  ])("blocks application rollout on migration %s", async (_label, migration, status, message) => {
+    const { engine, docker, secrets, root } = harness();
+    await engine.deploy(envelope());
+    const running = docker.running;
+    const upCalls = docker.calls.filter((call) => call[0] === "up").length;
+    const apiCurrent = (await secrets.status("exb-prd-api")).current;
+    docker.migration = migration;
+    const next = secondRelease();
+    const result = await engine.deploy(envelope(next.request, next.manifest));
+    expect(result).toMatchObject({ status: "failed", outcome: "failed-before-rollout", failedPhase: "migration" });
+    expect(result.failure.message).toMatch(message);
+    expect(result.migration).toMatchObject({ status, started: true, databaseMayHaveChanged: true });
+    expect(result.migration.container).toMatch(/migration/u);
+    expect(result.restoration).toMatchObject({ attempted: false, outcome: "not-required" });
+    expect(result.restoration.reason).toMatch(/may have partially changed the database/u);
+    expect(docker.running).toBe(running);
+    expect(docker.calls.filter((call) => call[0] === "up").length).toBe(upCalls);
+    expect((await secrets.status("exb-prd-api")).current).toBe(apiCurrent);
+    expect((await secrets.status("exb-prd-api")).pending).toBeNull();
+    expect(docker.calls.filter((call) => call[0] === "run").at(-1)?.[3]).toBe(600_000);
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
+    expect(existsSync(join(root, "previous.json"))).toBe(false);
+    expect(history(root).at(-1)).toMatchObject({ status: "failed", outcome: "failed-before-rollout", migration: { status } });
+  });
+
+  it("blocks rollout when the migration container cannot start and reports that it never ran", async () => {
+    const { engine, docker, root } = harness();
+    await engine.deploy(envelope());
+    const running = docker.running;
+    docker.migration = { timedOut: false, exitCode: null, created: false, commandCode: 1 };
+    const result = await engine.deploy(envelope());
+    expect(result).toMatchObject({ status: "failed", failedPhase: "migration", outcome: "failed-before-rollout" });
+    expect(result.failure.message).toMatch(/could not be started.*dependency/u);
+    expect(result.migration).toMatchObject({ status: "not-started", started: false, databaseMayHaveChanged: false, container: "" });
+    expect(result.restoration.reason).not.toMatch(/database/u);
+    expect(docker.running).toBe(running);
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
+  });
+
+  it("does not trust a zero command status without a terminated migration container", async () => {
+    const { engine, docker } = harness();
+    docker.migration = { timedOut: false, exitCode: null, created: false, commandCode: 0 };
+    const result = await engine.deploy(envelope());
+    expect(result).toMatchObject({ status: "failed", failedPhase: "migration" });
+    expect(docker.calls.some((call) => call[0] === "up")).toBe(false);
+  });
+
+  it("blocks rollout without starting the migrator when its runtime secrets cannot be activated", async () => {
+    const { engine, docker, secrets, root } = harness();
     await engine.deploy(envelope());
     const running = docker.running;
     const apiCurrent = (await secrets.status("exb-prd-api")).current;
-    docker.migration = migration;
+    secrets.failures.set("activate:exb-prd-mig", { ok: false, category: "filesystem" });
+    const runs = docker.calls.filter((call) => call[0] === "run").length;
     const result = await engine.deploy(envelope());
-    expect(result).toMatchObject({ status: "failed", failedPhase: "migration" });
-    expect(result.failure.message).toMatch(message);
-    expect(result.migration.container).toMatch(/migration/u);
+    expect(result).toMatchObject({ status: "failed", failedPhase: "migration", outcome: "failed-before-rollout" });
+    expect(result.failure).toMatchObject({ category: "secrets" });
+    expect(result.migration).toMatchObject({ status: "not-started", started: false });
+    expect(docker.calls.filter((call) => call[0] === "run").length).toBe(runs);
     expect(docker.running).toBe(running);
-    expect((await secrets.status("exb-prd-api")).current).toBe(apiCurrent);
-    expect(docker.calls.filter((call) => call[0] === "run").at(-1)?.[3]).toBe(600_000);
+    expect(await secrets.status("exb-prd-api")).toMatchObject({ current: apiCurrent, pending: null });
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
+  });
+
+  it("refuses to remove or race a migration left running by an interrupted deployment", async () => {
+    const { engine, docker, root } = harness();
+    await engine.deploy(envelope());
+    docker.leftoverRunningMigration = true;
+    const runs = docker.calls.filter((call) => call[0] === "run").length;
+    const result = await engine.deploy(envelope());
+    expect(result).toMatchObject({ status: "failed", failedPhase: "migration", outcome: "failed-before-rollout" });
+    expect(result.failure.message).toMatch(/interrupted deployment is still running/u);
+    expect(result.migration.status).toBe("not-started");
+    expect(docker.calls.some((call) => call[0] === "rm" && call[1] === "interrupted-migrator")).toBe(false);
+    expect(docker.calls.filter((call) => call[0] === "run").length).toBe(runs);
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
+  });
+
+  it("records a configured migration as not run when deployment fails earlier", async () => {
+    const { engine, docker } = harness();
+    docker.pullFailures.add(`docker.io/example/backend-webapi@${digest("a")}`);
+    const result = await engine.deploy(envelope());
+    expect(result.failedPhase).toBe("pull");
+    expect(result.migration).toMatchObject({ configured: true, status: "not-run", started: false, databaseMayHaveChanged: false });
   });
 
   it("skips the migration stage entirely when no migration service is configured", async () => {
@@ -340,8 +418,10 @@ describe("vps-deploy engine", () => {
     docker.secretMounts = false;
     const result = await engine.deploy(envelope({ migrationService: "", componentServiceMap: { migrator: "database-migrator" } }));
     expect(result.failure).toBeNull();
-    expect(result.migration).toEqual({ configured: false });
+    expect(result).toMatchObject({ status: "succeeded", outcome: "succeeded" });
+    expect(result.migration).toEqual({ configured: false, status: "not-configured" });
     expect(docker.calls.some((call) => call[0] === "run")).toBe(false);
+    expect(docker.calls.filter((call) => call[0] === "up").at(-1)?.[2]).toEqual(["webapi", "worker"]);
   });
 
   it("restores the previous release after an unhealthy rollout and still reports failure", async () => {
@@ -355,8 +435,17 @@ describe("vps-deploy engine", () => {
     const result = await engine.deploy(envelope(next.request, next.manifest));
     expect(result.ok).toBe(false);
     expect(result.status).toBe("restored-after-failure");
+    expect(result.outcome).toBe("restored-after-failure");
     expect(result.failedPhase).toBe("health");
+    expect(result.migration.status).toBe("succeeded");
     expect(result.restoration).toMatchObject({ attempted: true, outcome: "restored", targetDeploymentId: commit });
+    expect(result.restoration.health).toMatchObject({ healthy: true });
+    // Restoration recreates the previous release from its recorded immutable digests and never runs a migration.
+    const restoredImages = readFileSync(join(previousDirectory, "images.override.json"), "utf8");
+    expect(restoredImages).toContain(`docker.io/example/backend-webapi@${digest("a")}`);
+    expect(restoredImages).not.toContain(digest("f"));
+    expect(docker.calls.filter((call) => call[0] === "run").length).toBe(2);
+    expect(docker.calls.filter((call) => call[0] === "up").at(-1)?.[2]).not.toContain("database-migrator");
     expect(secrets.calls).toContain("restore:exb-prd-api");
     expect((await secrets.status("exb-prd-api")).current).toBe(previousGeneration);
     expect(docker.running!.directory).toBe(previousDirectory);
@@ -373,28 +462,65 @@ describe("vps-deploy engine", () => {
     const next = secondRelease();
     const result = await engine.deploy(envelope(next.request, next.manifest));
     expect(result.status).toBe("failed");
+    expect(result.outcome).toBe("restoration-failed");
     expect(result.restoration.outcome).toBe("failed");
     expect(result.restoration.reason).toMatch(/did not become healthy/u);
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
     expect(result.restoration.manualRecovery).toMatch(/recovery/u);
     expect(history(root).at(-1).restoration.outcome).toBe("failed");
   });
 
   it("does not invent a rollback target for a failed initial deployment", async () => {
-    const { engine, docker, secrets } = harness();
+    const { engine, docker, secrets, root } = harness();
     docker.defaultHealth = "unhealthy";
     const result = await engine.deploy(envelope());
     expect(result.status).toBe("failed");
+    expect(result.outcome).toBe("failed-no-previous-release");
     expect(result.restoration.outcome).toBe("no-previous-release");
     expect(secrets.calls.some((call) => call.startsWith("restore"))).toBe(false);
+    expect(existsSync(join(root, "active.json"))).toBe(false);
+    expect(history(root).at(-1)).toMatchObject({ status: "failed", outcome: "failed-no-previous-release" });
   });
 
   it("honours rollback-on-health-failure: false", async () => {
-    const { engine, docker, secrets } = harness();
+    const { engine, docker, secrets, root } = harness();
     await engine.deploy(envelope());
     docker.defaultHealth = "unhealthy";
-    const result = await engine.deploy(envelope({ rollbackOnHealthFailure: false }));
+    const next = secondRelease();
+    const result = await engine.deploy(envelope({ ...next.request, rollbackOnHealthFailure: false }, next.manifest));
+    expect(result).toMatchObject({ status: "failed", outcome: "failed-restoration-disabled" });
     expect(result.restoration.outcome).toBe("disabled");
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
     expect(secrets.calls.some((call) => call.startsWith("restore"))).toBe(false);
+  });
+
+  it.each([
+    ["a required container is missing", (docker: FakeDocker) => { docker.psOverride = (entries) => entries.filter((entry) => entry.service !== "worker"); }, /worker did not become ready \(missing/u],
+    ["a container terminates", (docker: FakeDocker) => { docker.psOverride = (entries) => entries.map((entry) => entry.service === "worker" ? { ...entry, state: "exited", exitCode: 137 } : entry); }, /worker is exited/u],
+    ["a container is restarted by its restart policy", (docker: FakeDocker) => { let polls = 0; docker.psOverride = (entries) => entries.map((entry) => entry.service === "worker" ? { ...entry, restartCount: polls++ > 0 ? 1 : 0 } : entry); }, /restarted during health verification/u],
+    ["health stays starting until the timeout", (docker: FakeDocker) => { docker.defaultHealth = "starting"; }, /health timeout after 300s: webapi did not become ready/u],
+  ])("does not commit a release when %s", async (_label, arrange, reason) => {
+    const { engine, docker, root } = harness();
+    await engine.deploy(envelope({ rollbackOnHealthFailure: false }));
+    arrange(docker);
+    const next = secondRelease();
+    const result = await engine.deploy(envelope({ ...next.request, rollbackOnHealthFailure: false }, next.manifest));
+    expect(result).toMatchObject({ status: "failed", failedPhase: "health", deployedId: "" });
+    expect(result.failure.message).toMatch(reason);
+    expect(readJson(join(root, "active.json")).deploymentId).toBe(commit);
+  });
+
+  it("fails health when a required HTTP readiness check never passes, without reading the body", async () => {
+    const { engine, root } = harness();
+    engine.deps.fetchImpl = async () => new Response("db-password=sentinel-response-body", { status: 503 });
+    const result = await engine.deploy(envelope({ healthChecks: [{ name: "api", url: "http://127.0.0.1:8080/health" }] }));
+    expect(result).toMatchObject({ status: "failed", failedPhase: "health", outcome: "failed-no-previous-release" });
+    expect(result.failure.message).toMatch(/health check 'api' returned 503/u);
+    expect(result.health.checks).toEqual([{ name: "api", status: 503, ok: false }]);
+    expect(result.health.rounds).toBeGreaterThan(1);
+    expect(JSON.stringify(result)).not.toContain("sentinel-response-body");
+    expect(readFileSync(join(root, "history", "deployments.jsonl"), "utf8")).not.toContain("sentinel-response-body");
+    expect(existsSync(join(root, "active.json"))).toBe(false);
   });
 
   it("treats a failed compose up as a rollout failure eligible for restoration", async () => {

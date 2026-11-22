@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- DEVOPS-010 deployment outcome and alerting contract for `vps-deploy.yml`. These are additive workflow outputs: `deployment-outcome`, `failed-phase`, `failure-category`, `migration-status`, and `restoration-outcome`.
+  - Results, host history, and the audit record gain `outcome` and `migration.status`/`started`/`databaseMayHaveChanged`.
+  - Outcomes distinguish success, failure before rollout, restored after failure, failed restoration, restoration disabled, no previous release, and an unknown host result.
+  - Migration status distinguishes a migrator that never started from one that ran.
+  - The job summary flags that the database may have changed.
+  - Older host helpers are still classified from their existing result fields.
+  - Both consumer examples add a provider-neutral, caller-owned `notify-deployment-failure` job.
+- Operations documentation:
+  - expand/migrate/contract schema compatibility;
+  - recovery for partial migrations, interrupted migrators, failed restoration, incompatible schema changes, and database restore;
+  - single-VPS downtime and availability limitations.
+- Unit tests for the health contract, migration evidence in the Docker adapter, outcome classification, and record sanitization. Linux harness checks for an unavailable migration dependency, an interrupted migrator, and a restart-looping container.
 - DEVOPS-009 reusable `vps-deploy.yml`. It deploys a `docker-publish.yml` manifest to an independent, application-owned Docker Compose stack on a Linux VPS over SSH, with a pinned host key and a deploy key bound to one stack by a forced command. On the host it uses a sudo-constrained root helper and a root-owned stack registry (`vps-deploy-stack.schema.json` v1) that authorizes environment, path, source repository, image namespaces, runtime-secret instances, ports, binds, and networks. The helper:
   - takes a stack-scoped lock and stages releases with atomic state transitions;
   - generates a digest image override;
@@ -48,6 +60,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- DEVOPS-010 hardens `vps-deploy` migration and health gates. Each previously risked an incorrect success or the loss of an in-flight migration.
+  - A migration now succeeds only when its container exists, has stopped, and recorded exit code `0`. A zero CLI status without a terminated container, or a still-running (even healthy) migrator, fails.
+  - A migrator still running from an interrupted deployment now blocks the deployment instead of being force-removed.
+  - A required container restarted by Docker during health verification now fails health.
 - `workflow-contracts.md` documents the implemented `vps-deploy.yml` validation, execution, restoration, and audit behavior without changing its inputs, outputs, secrets, or permissions. The same-run `manifest-artifact` download needs only `contents: read`.
 - Reconciled the DEVOPS-006 design with the implemented contract: `/run/runtime-secrets` tmpfs is now the default, key-per-file is definitive, runtime refresh retention is distinguished from reboot loss, activation is separated from health validation, and container recreation is required after pointer activation.
 - Replaced the planned Infisical runtime-secrets provider with Doppler. Earlier documentation named Infisical only as a later design; no Infisical integration was ever implemented. Linked the Doppler design from the README, architecture, security, deployment-model, workflow-contract, and migration documentation. Recorded the rules that the planned `vps-deploy.yml` and `vps-rollback.yml` implementations must follow: deployment-time secret rendering order, ephemeral migrator secrets, and secret-generation rollback policy. Public workflow contracts and manifest schemas are unchanged.

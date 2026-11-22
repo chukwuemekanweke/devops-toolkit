@@ -8,7 +8,7 @@
 // Failures after rollout optionally restore the previous release's images and
 // runtime-secret pointers, verify its health, and always report failure.
 import {
-  DeployError, fail, isRecord, parseJsonStrict, patterns, printable, sha256, validateDeploymentRequest,
+  DeployError, classifyDeploymentOutcome, fail, isRecord, parseJsonStrict, patterns, printable, sha256, validateDeploymentRequest,
   validateReleaseManifest, validateRequestAgainstManifest, limits,
 } from "./contract.mjs";
 import {
@@ -123,6 +123,9 @@ export class DeploymentEngine {
       request = validateDeploymentRequest(envelope.request);
       result.environment = request.environment;
       result.deploymentId = request.deploymentId;
+      result.migration = request.migrationService
+        ? { configured: true, service: request.migrationService, status: "not-run", started: false, databaseMayHaveChanged: false, exitCode: null, timedOut: false, durationSeconds: 0, container: "" }
+        : { configured: false, status: "not-configured" };
       if (request.stackName !== stack) fail("validation", "stack-name is not the stack bound to this deploy identity");
       const registry = await this.deps.loadRegistry(stack);
       if (request.environment !== registry.environment) fail("validation", "environment does not match the host stack registry");
@@ -205,12 +208,18 @@ export class DeploymentEngine {
 
       if (request.migrationService) {
         this.phase(result, "migration");
-        const migration = { configured: true, service: request.migrationService, exitCode: null, timedOut: false, durationSeconds: 0, container: "" };
-        result.migration = migration;
+        const migration = result.migration;
+        migration.status = "not-started"; // until the migrator container exists
+        // An earlier deployment interrupted mid-migration (helper killed, host
+        // restarted) can leave its migrator running. Never remove it or start a
+        // concurrent migration; an operator decides.
+        if ((await docker.oneShotContainers(stack, request.migrationService, { running: true })).length > 0) {
+          fail("migration", "a migration container from an earlier, interrupted deployment is still running; it was not stopped and no new migration was started. Let it finish or stop it deliberately, review its logs and the database, then redeploy");
+        }
         const migratorSecret = prepared.find((item) => item.service === request.migrationService);
         if (migratorSecret) {
           const activated = await secrets.activate(migratorSecret.instance);
-          if (!activated.ok) fail("secrets", `migration runtime secrets could not be activated (${activated.category})`);
+          if (!activated.ok) fail("secrets", `migration runtime secrets could not be activated (${activated.category}); the migrator was not started`);
           result.secrets[request.migrationService].activated = true;
           migratorSecret.activated = true;
         }
@@ -225,8 +234,26 @@ export class DeploymentEngine {
         migration.durationSeconds = Math.round((now().getTime() - began) / 1000);
         migration.timedOut = outcome.timedOut;
         migration.exitCode = outcome.exitCode;
-        if (outcome.timedOut) fail("migration", `migration did not finish within ${request.migrationTimeoutSeconds} seconds; it was stopped and application rollout was blocked`);
-        if (outcome.exitCode !== 0) fail("migration", `migration exited with status ${outcome.exitCode ?? "unknown"}; application rollout was blocked`);
+        migration.started = outcome.created === true;
+        migration.databaseMayHaveChanged = migration.started;
+        if (outcome.timedOut) {
+          migration.status = "timed-out";
+          fail("migration", `migration did not finish within ${request.migrationTimeoutSeconds} seconds; it was stopped${outcome.running ? " (the stop could not be confirmed; inspect the container)" : ""} and application rollout was blocked`);
+        }
+        if (!migration.started) {
+          migration.status = "not-started";
+          migration.container = "";
+          fail("migration", `migration container could not be started (docker compose run exit ${outcome.commandCode ?? "unknown"}); a declared dependency may be unavailable or unhealthy. Application rollout was blocked`);
+        }
+        if (outcome.running) {
+          migration.status = "failed";
+          fail("migration", "migration container is still running; a running or healthy migrator is not a completed migration. Application rollout was blocked");
+        }
+        if (outcome.exitCode !== 0) {
+          migration.status = "failed";
+          fail("migration", `migration exited with status ${outcome.exitCode ?? "unknown"}; application rollout was blocked`);
+        }
+        migration.status = "succeeded";
         await docker.removeContainer(name);
         migration.container = "";
       }
@@ -284,7 +311,13 @@ export class DeploymentEngine {
           const discarded = await secrets.discard(item.instance).catch(() => ({ ok: false, category: "error" }));
           if (result.secrets[item.service]) result.secrets[item.service].discarded = discarded.ok;
         }
-        result.restoration = { attempted: false, outcome: "not-required", reason: "failure occurred before application rollout; running services were not changed" };
+        result.restoration = {
+          attempted: false,
+          outcome: "not-required",
+          reason: result.migration.databaseMayHaveChanged
+            ? "failure occurred before application rollout; running services were not changed, but the migration had started and may have partially changed the database"
+            : "failure occurred before application rollout; running services were not changed",
+        };
       } else if (!request.rollbackOnHealthFailure) {
         result.restoration = { attempted: false, outcome: "disabled", reason: "rollback-on-health-failure is false; the failed release was left in place for investigation" };
       } else if (!previous) {
@@ -297,6 +330,7 @@ export class DeploymentEngine {
     } finally {
       await docker.forgetCredentials().catch(() => {});
       result.finishedAt = now().toISOString();
+      result.outcome = classifyDeploymentOutcome(result);
       if (lock) {
         try {
           await state.appendHistory({ recordedAt: result.finishedAt, ...result, workflow: request?.workflow ?? null });

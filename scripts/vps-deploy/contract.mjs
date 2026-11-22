@@ -371,3 +371,42 @@ export function printable(value) {
 export function sha256(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
+
+/**
+ * Public deployment outcomes (workflow output `deployment-outcome`). Derived only
+ * from fields every version-1 host result carries, so a runner newer than the
+ * installed host helper still classifies correctly.
+ */
+export const deploymentOutcomes = Object.freeze([
+  "succeeded", "failed-before-rollout", "restored-after-failure", "restoration-failed",
+  "failed-restoration-disabled", "failed-no-previous-release", "unknown",
+]);
+
+const restorationOutcomes = new Map([
+  ["not-required", "failed-before-rollout"],
+  ["restored", "restored-after-failure"],
+  ["failed", "restoration-failed"],
+  ["disabled", "failed-restoration-disabled"],
+  ["no-previous-release", "failed-no-previous-release"],
+]);
+
+export function classifyDeploymentOutcome(result) {
+  if (!isRecord(result)) return "unknown";
+  if (result.status === "succeeded") return "succeeded";
+  const restoration = isRecord(result.restoration) ? result.restoration.outcome : undefined;
+  return restorationOutcomes.get(restoration) ?? "unknown";
+}
+
+/** Public migration statuses (workflow output `migration-status`). */
+export const migrationStatuses = Object.freeze(["not-configured", "not-run", "not-started", "failed", "timed-out", "succeeded", "unknown"]);
+
+export function classifyMigrationStatus(migration, failedPhase) {
+  if (!isRecord(migration)) return "unknown";
+  if (migration.configured !== true) return "not-configured";
+  if (migrationStatuses.includes(migration.status)) return migration.status;
+  // Results from host helpers that predate `migration.status`.
+  if (migration.timedOut === true) return "timed-out";
+  if (migration.exitCode === 0) return "succeeded";
+  if (Number.isInteger(migration.exitCode)) return "failed";
+  return failedPhase === "migration" ? "failed" : "not-run";
+}

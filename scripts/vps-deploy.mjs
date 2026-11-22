@@ -10,7 +10,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  DeployError, limits, parseBooleanInput, parseComponentServiceMap, parseComposeFileList, parseHealthChecks,
+  DeployError, classifyDeploymentOutcome, classifyMigrationStatus, limits, parseBooleanInput, parseComponentServiceMap, parseComposeFileList, parseHealthChecks,
   parseIntegerInput, parseServiceList, printable, selectManifestSource, validateDeploymentRequest, validateEnvironment,
   validateReleaseManifest, validateRemoteDeploymentPath, validateRequestAgainstManifest, validateStackName,
 } from "./vps-deploy/contract.mjs";
@@ -232,6 +232,44 @@ function text(value, max = 500) {
   return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/gu, "?").slice(0, max) : "";
 }
 
+/**
+ * Outcome when the host returned no result: runner-side validation failures
+ * happen before any connection (nothing changed); a transport failure leaves the
+ * host-side outcome unknown, so operators must consult the host history.
+ */
+function outcomeOf(result, failure) {
+  if (result) {
+    if (result.restoration === undefined && result.phase === undefined && result.status === "failed") return "failed-before-rollout";
+    return classifyDeploymentOutcome(result);
+  }
+  return failure && failure.phase !== "transport" ? "failed-before-rollout" : "unknown";
+}
+
+function migrationOf(result, bundle, failure) {
+  const failedPhase = result?.failedPhase ?? result?.phase;
+  if (result?.migration) {
+    const migration = result.migration;
+    const status = classifyMigrationStatus(migration, failedPhase);
+    // Older host helpers do not report `started`; assume a migration that produced an outcome ran.
+    const started = typeof migration.started === "boolean" ? migration.started : ["failed", "timed-out", "succeeded"].includes(status);
+    return {
+      configured: migration.configured === true,
+      status,
+      started,
+      databaseMayHaveChanged: migration.databaseMayHaveChanged === true || started,
+      exitCode: Number.isInteger(migration.exitCode) ? migration.exitCode : null,
+      timedOut: migration.timedOut === true,
+      durationSeconds: Number.isInteger(migration.durationSeconds) ? migration.durationSeconds : null,
+    };
+  }
+  if (!bundle) return null;
+  const configured = typeof bundle.request?.migrationService === "string" && bundle.request.migrationService !== "";
+  if (!configured) return { configured: false, status: "not-configured", started: false, databaseMayHaveChanged: false, exitCode: null, timedOut: false, durationSeconds: null };
+  // No host result: before connection nothing ran; after a transport failure the migration may have run.
+  const unknown = !result && failure?.phase === "transport";
+  return { configured: true, status: unknown ? "unknown" : "not-run", started: false, databaseMayHaveChanged: unknown, exitCode: null, timedOut: false, durationSeconds: null };
+}
+
 export function buildRecord(env, { bundle, result, failure }) {
   const status = result && statuses.has(result.status) ? result.status : "failed";
   const generationIds = {};
@@ -244,6 +282,7 @@ export function buildRecord(env, { bundle, result, failure }) {
   return {
     schemaVersion: 1,
     status,
+    outcome: status === "succeeded" ? "succeeded" : outcomeOf(result, failure),
     stackName: text(bundle?.request?.stackName ?? result?.stackName ?? env.STACK_NAME, 64),
     environment: text(bundle?.request?.environment ?? env.ENVIRONMENT, 64),
     deploymentId: text(bundle?.request?.deploymentId ?? env.DEPLOYMENT_ID, 128),
@@ -253,7 +292,7 @@ export function buildRecord(env, { bundle, result, failure }) {
     phase: text(result?.failedPhase ?? result?.phase ?? failure?.phase, 32),
     failure: result?.failure ? { category: text(result.failure.category, 32), message: text(result.failure.message) } : (failure ? { category: text(failure.category, 32), message: text(failure.message) } : null),
     restoration: result?.restoration ? { attempted: result.restoration.attempted === true, outcome: text(result.restoration.outcome, 40), targetDeploymentId: text(result.restoration.targetDeploymentId, 128), reason: text(result.restoration.reason) } : null,
-    migration: result?.migration ? { configured: result.migration.configured === true, exitCode: Number.isInteger(result.migration.exitCode) ? result.migration.exitCode : null, timedOut: result.migration.timedOut === true, durationSeconds: Number.isInteger(result.migration.durationSeconds) ? result.migration.durationSeconds : null } : null,
+    migration: migrationOf(result, bundle, failure),
     health: result?.health ? { healthy: result.health.healthy === true, reason: text(result.health.reason), durationSeconds: Number.isInteger(result.health.durationSeconds) ? result.health.durationSeconds : null } : null,
     runtimeSecretGenerations: generationIds,
     release: text(result?.release, 200),
@@ -273,20 +312,38 @@ function recordCommand(env) {
   output(env, "deployed-id", record.deployedId);
   output(env, "previous-deployment-id", record.previousDeploymentId);
   output(env, "record-artifact", `vps-deployment-record-${stack}-${env.RUN_ID ?? "0"}-${env.RUN_ATTEMPT ?? "1"}`);
+  for (const [name, value] of Object.entries(notificationOutputs(record))) output(env, name, value);
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = [
       `### VPS deployment: ${record.status}`, "",
       "| Field | Value |", "| --- | --- |",
+      `| Outcome | \`${record.outcome}\` |`,
       `| Stack | \`${record.stackName}\` |`, `| Environment | \`${record.environment}\` |`,
       `| Deployment ID | \`${record.deploymentId}\` |`, `| Previous deployment | \`${record.previousDeploymentId || "none"}\` |`,
       `| Manifest SHA-256 | \`${record.manifestSha256 || "n/a"}\` |`,
     ];
+    if (record.migration) lines.push(`| Migration | \`${record.migration.status}\`${record.migration.exitCode !== null ? ` (exit ${record.migration.exitCode})` : ""} |`);
     if (record.failure) lines.push(`| Failed phase | \`${record.phase}\` |`, `| Failure | ${record.failure.message.replaceAll("|", "\\|")} |`);
     if (record.restoration?.attempted || record.restoration?.outcome === "no-previous-release") lines.push(`| Restoration | ${record.restoration.outcome} |`);
+    if (record.status !== "succeeded" && record.migration?.databaseMayHaveChanged) {
+      lines.push("", "> **Database caution:** the migration started, so the database may have been changed. Restoration never reverses migrations; assess the schema before redeploying.");
+    }
     writeFileSync(env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`, { flag: "a" });
   }
-  if (record.failure) console.error(`vps-deploy ${record.status} in phase '${record.phase}': ${record.failure.message}`);
+  if (record.failure) console.error(`vps-deploy ${record.status} (${record.outcome}) in phase '${record.phase}': ${record.failure.message}`);
   if (record.restoration?.attempted) console.error(`vps-deploy restoration: ${record.restoration.outcome}${record.restoration.reason ? ` - ${record.restoration.reason}` : ""}`);
+}
+
+/** Non-sensitive, single-line values for caller-owned failure notification jobs. */
+export function notificationOutputs(record) {
+  const token = (value, fallback = "") => (typeof value === "string" && /^[a-z0-9-]{1,40}$/u.test(value) ? value : fallback);
+  return {
+    "deployment-outcome": token(record.outcome, "unknown"),
+    "failed-phase": record.status === "succeeded" ? "" : token(record.phase, "unknown"),
+    "failure-category": record.failure ? token(record.failure.category, "unknown") : "",
+    "migration-status": token(record.migration?.status, "unknown"),
+    "restoration-outcome": token(record.restoration?.outcome, ["succeeded", "failed-before-rollout"].includes(record.outcome) ? "not-required" : "unknown"),
+  };
 }
 
 async function run(command, env) {

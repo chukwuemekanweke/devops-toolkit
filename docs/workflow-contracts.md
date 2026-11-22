@@ -326,6 +326,13 @@ Minimum: `contents: read`. Add `actions: read` when `manifest-artifact` is used.
 | `deployed-id` | Deployment ID that passed health, empty on failure |
 | `previous-deployment-id` | Previously active recorded deployment, empty on first deployment |
 | `deployment-record-artifact` | Sanitized audit record artifact name |
+| `deployment-outcome` | `succeeded`, `failed-before-rollout`, `restored-after-failure`, `restoration-failed`, `failed-restoration-disabled`, `failed-no-previous-release`, or `unknown` (the host result was not received) |
+| `failed-phase` | Phase that failed (`validate`, `lock`, `stage`, `pull`, `secrets`, `migration`, `rollout`, `health`, `commit`, or `transport`); empty on success |
+| `failure-category` | Sanitized failure category (for example `migration`, `secrets`, `health`, `transport`); empty on success |
+| `migration-status` | `not-configured`, `not-run`, `not-started`, `failed`, `timed-out`, `succeeded`, or `unknown` |
+| `restoration-outcome` | `not-required`, `restored`, `failed`, `disabled`, `no-previous-release`, or `unknown` |
+
+The last five outputs (added in DEVOPS-010) are single-line tokens intended for caller-owned failure notification (see [Failure notification](#failure-notification)). They are set by the always-run record step, so they are available to a dependent caller job even when the deployment job fails. They are empty only when the job ended before that step ran (for example a lost runner).
 
 ### Execution and failure behavior
 
@@ -337,7 +344,7 @@ In order, on the host and under an exclusive lock scoped to the stack (other sta
 2. **Stage** a release-specific directory with the Compose files, the manifest, a generated image override (`image@sha256:…` for each component service), and a sanitized request record. Run `docker compose config` with every profile enabled and apply the host Compose policy (digest-pinned images, no privileged mode, host namespaces, Docker socket, foreign secret mounts, unapproved binds/ports/networks, or root component users).
 3. **Pull** every image by digest with a temporary pull-only credential.
 4. **Prepare runtime secrets**: render every registered secret-bearing service to a `pending` generation through the DEVOPS-007 units. Any render failure discards the generations rendered so far and stops.
-5. **Migrate** (optional): activate the migrator's generation, run the service with `docker compose run`, enforce the timeout, and require exit `0`. A failed or timed-out container is retained for diagnosis; long-running services are not touched.
+5. **Migrate** (optional): refuse to proceed if a migrator from an earlier, interrupted deployment is still running; activate the migrator's generation; run the service with `docker compose run`; enforce the timeout. Success requires the migrator container to exist, to have stopped, and to record exit code `0`. A running or healthy migrator, or a zero CLI status without a terminated container, is not success. A failed or timed-out container is retained for diagnosis; long-running services are not touched.
 6. **Roll out**: activate the remaining generations, record generation ids as container labels so Compose recreates exactly the containers whose image or generation changed, and run `docker compose up --no-build --pull never` for the long-running (default-profile, non-migration) services.
 7. **Verify health** using the service-state contract in [vps-deployment.md](vps-deployment.md#health-verification) and the HTTP checks, with bounded retries until `health-timeout-seconds`.
 8. **Commit**: atomically write the active release record, preserve the previous one and its manifest, append a sanitized history line, and prune runtime-secret generations that no pointer or container references.
@@ -350,6 +357,42 @@ Failure handling in detail:
 - A failure in steps 6–7 (activation, `compose up`, or health) is a rollout failure. When `rollback-on-health-failure` is true and a previous release is recorded, the host restores the previous runtime-secret pointers (`restore`), recreates the previous release's containers with its recorded image digests and Compose files (`--remove-orphans`), and verifies the previous release with its recorded health configuration. A healthy restoration yields `restored-after-failure`; a failed one yields `failed` with `restoration.outcome: failed` and manual-recovery guidance. Either way the job fails.
 - When `rollback-on-health-failure` is false, or there is no previous release (initial deployment), the failed release is left in place for diagnosis and no rollback target is invented.
 - The job fails unless `deployment-status` is `succeeded`. The `deployment-record-artifact` (`vps-deployment-record-<stack>-<run id>-<attempt>`, retained 90 days) is uploaded even when validation or the SSH connection fails.
+- Migration failures are distinguished by `migration-status`: `not-started` (secret activation failed, the migrator could not start, for example because a dependency was unavailable, or an interrupted earlier migration is still running) versus `failed`/`timed-out` (the migrator ran). Whenever the migrator ran, the record's `migration.databaseMayHaveChanged` is `true`. A failed migration can still have changed the database, and the toolkit never claims otherwise.
+- A `transport` failure (no host result) yields `deployment-outcome: unknown`. The host may have completed, failed, or restored the deployment; consult `history/deployments.jsonl` on the host before retrying.
+
+### Failure notification
+
+The workflow does not deliver alerts. A failed job is not an alert delivery mechanism. The host helper only executes and records. Notification is a caller-owned job that runs after the deployment job and uses the caller's own provider credentials, so no notification credential ever reaches the VPS or the toolkit:
+
+```yaml
+notify-deployment-failure:
+  needs: deploy
+  if: ${{ always() && (needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') }}
+  runs-on: ubuntu-latest
+  permissions: {}
+  steps:
+    - name: Send deployment failure alert
+      env:
+        ALERT_WEBHOOK_URL: ${{ secrets.DEPLOY_ALERT_WEBHOOK_URL }}
+        OUTCOME: ${{ needs.deploy.outputs.deployment-outcome || 'unknown' }}
+        FAILED_PHASE: ${{ needs.deploy.outputs.failed-phase || 'unknown' }}
+        MIGRATION_STATUS: ${{ needs.deploy.outputs.migration-status || 'unknown' }}
+        RESTORATION: ${{ needs.deploy.outputs.restoration-outcome || 'unknown' }}
+        RECORD: ${{ needs.deploy.outputs.deployment-record-artifact }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        test -n "$ALERT_WEBHOOK_URL" || { echo "DEPLOY_ALERT_WEBHOOK_URL is not configured; no alert was delivered" >&2; exit 1; }
+        jq -n --arg outcome "$OUTCOME" --arg phase "$FAILED_PHASE" --arg migration "$MIGRATION_STATUS" \
+          --arg restoration "$RESTORATION" --arg record "$RECORD" --arg run "$RUN_URL" \
+          '{text: "Deployment \($outcome): phase=\($phase) migration=\($migration) restoration=\($restoration) record=\($record) \($run)"}' \
+          | curl --fail --silent --show-error --max-time 30 -H 'Content-Type: application/json' --data @- "$ALERT_WEBHOOK_URL"
+```
+
+- Trigger on the job **result** (`failure`/`cancelled`), not only on outputs, so a run that never reached the record step still alerts with `unknown` values.
+- A migration failure is `migration-status` `failed`, `timed-out`, or `not-started` with `failed-phase: migration`. Route it to the database owner when `migration-status` is `failed` or `timed-out`, because the database may have been partially changed.
+- `restored-after-failure` is still an incident: the new release was rejected even though the previous one is running.
+- The notification job runs separately from the deployment job and cannot change its result. If alert delivery fails, the notification job fails as well, and the deployment job's failure stays unchanged.
+- Adapt the payload to the provider (Slack, Teams, email relay, incident management). Store its endpoint or credential as a caller GitHub secret, preferably in a dedicated environment, and never hardcode recipients in the toolkit.
 
 ### Example call
 

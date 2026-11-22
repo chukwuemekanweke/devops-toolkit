@@ -24,6 +24,16 @@ DEVOPS-007 implements the host-side portion of the Doppler Developer-plan archit
 
 DEVOPS-009 implements `vps-deploy.yml`. It deploys an application-owned Compose stack through a constrained host interface: each deploy key is bound to one stack by an SSH forced command, sudo allows only the toolkit's root helper, and a root-owned stack registry authorizes paths, provenance, and secrets. The helper locks the stack, stages and policy-checks the Compose model, pulls images by digest, renders DEVOPS-007 secrets before an optional one-shot migration, recreates only changed containers, verifies health, and either commits the release or restores the previous one. A systemd stack unit starts the active release at boot only after runtime-secret initialization. See [VPS deployment operations](docs/vps-deployment.md).
 
+DEVOPS-010 hardens that lifecycle for migration safety:
+
+- A migration is accepted only when its container has terminated with exit code `0`.
+- A migrator still running from an interrupted deployment blocks the next deployment instead of being removed.
+- Containers restarted during health verification fail the release.
+- Restoration recreates only application images from recorded digests and never touches the database.
+- Every deployment reports a machine-readable outcome, failed phase, migration status, and restoration outcome for caller-owned alerting.
+
+Deployment is health-gated, not zero-downtime. Schema changes must follow [expand/migrate/contract](docs/vps-deployment.md#database-compatibility-expand-migrate-contract).
+
 The toolkit validates itself on pull requests and pushes to `main` through `.github/workflows/validate.yml`. It checks workflow syntax, YAML structure, schema fixtures, reference topologies, implemented reusable-workflow interfaces, and security invariants. It is a repository maintenance workflow, not a public reusable capability.
 
 ## Design principles

@@ -41,6 +41,8 @@ Do not create placeholder workflows that report success. A workflow file is adde
 - Never accept remote shell text from workflow inputs, add the deploy identity to the `docker` group, relax strict host-key checking, or let a request widen what the host registry authorizes.
 - Keep the Compose policy fail-closed: new Compose features that can reach host resources are rejected until reviewed and explicitly allowed.
 - Failures before rollout must not change running containers, `current` generations, or `active.json`; the job fails whenever the new release did not pass health, including after a successful restoration.
+- Migration success is only a terminated migrator container with recorded exit code `0`. Never treat health, a CLI status, or a still-running container as success, never remove a migrator left running by an interrupted deployment, and never report the database as unchanged once the migrator ran. Restoration must never run migrations or touch the database.
+- The `deployment-outcome`, `migration-status`, and `restoration-outcome` vocabularies are public contracts. Keep alert delivery caller-owned and outside the deployment job and the host.
 - Deployment and systemd behavior changes must pass `npm run test:vps-deploy:linux` and `npm run test:vps-deploy:systemd`.
 
 ## Local validation

@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { JsonSchemaValidator } from "../src/validation/json-schema-validator.js";
 import {
-  parseComponentServiceMap, parseComposeFileList, parseHealthChecks, resolveComponentServices, selectManifestSource,
+  classifyDeploymentOutcome, classifyMigrationStatus, parseComponentServiceMap, parseComposeFileList, parseHealthChecks, resolveComponentServices, selectManifestSource,
   validateDeploymentRequest, validateReleaseManifest, validateRemoteDeploymentPath, validateStackName,
 } from "../scripts/vps-deploy/contract.mjs";
-import { buildRecord, parseRemoteResult, prepareBundle, readWorkspaceFile, relayStderrLine, sshArguments, validateInputs, validateSshTarget } from "../scripts/vps-deploy.mjs";
+import { buildRecord, notificationOutputs, parseRemoteResult, prepareBundle, readWorkspaceFile, relayStderrLine, sshArguments, validateInputs, validateSshTarget } from "../scripts/vps-deploy.mjs";
 
 const root = join(import.meta.dirname, "..");
 import { commit, digest, manifestObject, repository, requestObject, workflow } from "./helpers/vps-deploy-fixtures.js";
@@ -190,5 +190,75 @@ describe("vps-deploy runner helper", () => {
     expect(record.status).toBe("restored-after-failure");
     expect(JSON.stringify(record)).not.toContain("secret\"");
     expect(buildRecord({}, { bundle: null, result: { status: "pwned" }, failure: null }).status).toBe("failed");
+  });
+
+  const bundle = (migrationService = "database-migrator") => ({ request: { stackName: "example-backend-production", environment: "production", deploymentId: commit, migrationService }, manifestSha256: "f".repeat(64) });
+
+  it("exposes a machine-readable failure signal for a failed migration", () => {
+    const result = {
+      ok: false, status: "failed", phase: "migration", failedPhase: "migration", previousDeploymentId: "prev",
+      failure: { category: "migration", message: "migration exited with status 1; application rollout was blocked" },
+      migration: { configured: true, status: "failed", started: true, databaseMayHaveChanged: true, exitCode: 1, timedOut: false, durationSeconds: 4, container: "x" },
+      restoration: { attempted: false, outcome: "not-required", reason: "failure occurred before application rollout" },
+    };
+    const record = buildRecord({ RUN_ID: "7" }, { bundle: bundle(), result, failure: null });
+    expect(record).toMatchObject({
+      status: "failed", outcome: "failed-before-rollout", phase: "migration", deployedId: "",
+      migration: { configured: true, status: "failed", started: true, databaseMayHaveChanged: true, exitCode: 1 },
+      restoration: { attempted: false, outcome: "not-required" },
+    });
+    expect(notificationOutputs(record)).toEqual({
+      "deployment-outcome": "failed-before-rollout", "failed-phase": "migration", "failure-category": "migration",
+      "migration-status": "failed", "restoration-outcome": "not-required",
+    });
+  });
+
+  it.each([
+    [{ status: "succeeded", restoration: { attempted: false, outcome: "not-required" }, migration: { configured: true, status: "succeeded", started: true, exitCode: 0 } }, null, "succeeded", "succeeded", "not-required", ""],
+    [{ status: "restored-after-failure", failedPhase: "health", failure: { category: "health", message: "x" }, restoration: { attempted: true, outcome: "restored" }, migration: { configured: true, status: "succeeded", started: true, exitCode: 0 } }, null, "restored-after-failure", "succeeded", "restored", "health"],
+    [{ status: "failed", failedPhase: "health", failure: { category: "restore", message: "x" }, restoration: { attempted: true, outcome: "failed" }, migration: { configured: false, status: "not-configured" } }, null, "restoration-failed", "not-configured", "failed", "health"],
+    [{ status: "failed", failedPhase: "rollout", failure: { category: "rollout", message: "x" }, restoration: { attempted: false, outcome: "disabled" }, migration: { configured: false } }, null, "failed-restoration-disabled", "not-configured", "disabled", "rollout"],
+    [{ status: "failed", failedPhase: "health", failure: { category: "health", message: "x" }, restoration: { attempted: false, outcome: "no-previous-release" }, migration: { configured: false } }, null, "failed-no-previous-release", "not-configured", "no-previous-release", "health"],
+    [null, { phase: "validate", category: "validation", message: "bad input" }, "failed-before-rollout", "not-run", "not-required", "validate"],
+    [null, { phase: "transport", category: "transport", message: "SSH connection failed" }, "unknown", "unknown", "unknown", "transport"],
+  ])("classifies deployment outcomes for notifications (%#)", (result, failure, outcome, migration, restoration, phase) => {
+    const record = buildRecord({}, { bundle: bundle(), result, failure });
+    const outputs = notificationOutputs(record);
+    expect(outputs["deployment-outcome"]).toBe(outcome);
+    expect(outputs["migration-status"]).toBe(migration);
+    expect(outputs["restoration-outcome"]).toBe(restoration);
+    expect(outputs["failed-phase"]).toBe(phase);
+    for (const value of Object.values(outputs)) expect(value).toMatch(/^[a-z0-9-]*$/u);
+  });
+
+  it("flags a transport failure as possibly having changed the database", () => {
+    const record = buildRecord({}, { bundle: bundle(), result: null, failure: { phase: "transport", category: "transport", message: "x" } });
+    expect(record.migration).toMatchObject({ status: "unknown", databaseMayHaveChanged: true });
+    expect(buildRecord({}, { bundle: bundle(""), result: null, failure: { phase: "transport", category: "transport", message: "x" } }).migration.status).toBe("not-configured");
+  });
+
+  it("classifies results from host helpers that predate DEVOPS-010 fields", () => {
+    expect(classifyMigrationStatus({ configured: true, exitCode: 3, timedOut: false }, "migration")).toBe("failed");
+    expect(classifyMigrationStatus({ configured: true, exitCode: null, timedOut: true }, "migration")).toBe("timed-out");
+    expect(classifyMigrationStatus({ configured: true, exitCode: 0, timedOut: false }, "health")).toBe("succeeded");
+    expect(classifyMigrationStatus({ configured: true, exitCode: null, timedOut: false }, "pull")).toBe("not-run");
+    expect(classifyMigrationStatus({ configured: false }, "pull")).toBe("not-configured");
+    expect(classifyDeploymentOutcome({ status: "failed", restoration: { outcome: "surprise" } })).toBe("unknown");
+    const legacy = buildRecord({}, { bundle: bundle(), result: { status: "failed", failedPhase: "migration", failure: { category: "migration", message: "x" }, migration: { configured: true, exitCode: 2, timedOut: false }, restoration: { attempted: false, outcome: "not-required" } }, failure: null });
+    expect(legacy.migration).toMatchObject({ status: "failed", started: true, databaseMayHaveChanged: true });
+  });
+
+  it("keeps a failed deployment failed and never copies unexpected or secret fields into the record", () => {
+    const result = {
+      status: "failed", outcome: "succeeded", failedPhase: "health", failure: { category: "health", message: "api is unhealthy", token: "dckr_pat_leak" },
+      restoration: { attempted: true, outcome: "restored", reason: "ok", password: "hunter2-leak" }, registry: { token: "dckr_pat_leak" },
+      migration: { configured: true, status: "succeeded", started: true, exitCode: 0, env: { DB_PASSWORD: "hunter2-leak" } },
+    };
+    const record = buildRecord({}, { bundle: bundle(), result, failure: null });
+    expect(record.status).toBe("failed");
+    expect(record.outcome).toBe("restored-after-failure");
+    expect(notificationOutputs(record)["deployment-outcome"]).not.toBe("succeeded");
+    expect(JSON.stringify(record)).not.toMatch(/dckr_pat_leak|hunter2-leak/u);
+    expect(notificationOutputs({ ...record, outcome: "evil\nname=value", phase: "x;y" })).toMatchObject({ "deployment-outcome": "unknown", "failed-phase": "unknown" });
   });
 });
