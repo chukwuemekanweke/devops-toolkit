@@ -4,9 +4,11 @@
 //   * every container of the service exists and is `running`;
 //   * when the image/Compose defines a Docker health check, it is `healthy`;
 //   * without a health check, the same container stays running for a
-//     stability window (min(10s, timeout/2)) rather than being assumed healthy.
-// `exited`, `dead` or `unhealthy` fail immediately. HTTP checks run from the
-// host against registry-approved hosts and must return an expected status.
+//     stability window (min(10s, timeout/2)) rather than being assumed healthy;
+//   * it is not restarted by Docker (restart policy) during verification.
+// `exited`, `dead`, `unhealthy` or a restart during verification fail
+// immediately. HTTP checks run from the host against registry-approved hosts
+// and must return an expected status.
 // Success requires every service and every HTTP check to pass in one round.
 import { isLoopback } from "./compose-policy.mjs";
 import { fail } from "./contract.mjs";
@@ -24,7 +26,7 @@ export function assertHealthCheckHosts(checks, allowedHosts) {
   }
 }
 
-export function evaluateServices(entries, services, tracker, nowMs, windowMs) {
+export function evaluateServices(entries, services, tracker, nowMs, windowMs, restarts = new Map()) {
   const results = [];
   let failedFast = null;
   for (const service of services) {
@@ -38,6 +40,11 @@ export function evaluateServices(entries, services, tracker, nowMs, windowMs) {
     for (const container of containers) {
       summary = { service, state: container.state, health: container.health, exitCode: container.state === "running" ? null : container.exitCode };
       if (container.state === "exited" || container.state === "dead") { failedFast ??= `${service} is ${container.state}`; ok = false; continue; }
+      if (Number.isInteger(container.restartCount)) {
+        const baseline = restarts.get(container.id);
+        if (baseline === undefined) restarts.set(container.id, container.restartCount);
+        else if (container.restartCount > baseline) { failedFast ??= `${service} terminated and was restarted during health verification`; ok = false; continue; }
+      }
       if (container.health === "unhealthy") { failedFast ??= `${service} is unhealthy`; ok = false; continue; }
       if (container.state !== "running") { ok = false; continue; }
       if (container.health) { if (container.health !== "healthy") ok = false; continue; }
@@ -68,12 +75,13 @@ export async function verifyHealth({ services, checks, timeoutSeconds, inspect, 
   const deadline = started + timeoutSeconds * 1000;
   const windowMs = stabilityWindowMs(timeoutSeconds);
   const tracker = new Map();
+  const restarts = new Map();
   let last = { services: [], checks: [] };
   let rounds = 0;
   for (;;) {
     rounds += 1;
     const entries = await inspect();
-    const serviceResult = evaluateServices(entries, services, tracker, now(), windowMs);
+    const serviceResult = evaluateServices(entries, services, tracker, now(), windowMs, restarts);
     const checkResults = serviceResult.failedFast ? [] : await Promise.all(checks.map((check) => runHttpCheck(check, { fetchImpl })));
     last = { services: serviceResult.services, checks: checkResults };
     if (serviceResult.failedFast) return { healthy: false, reason: serviceResult.failedFast, rounds, durationSeconds: Math.round((now() - started) / 1000), ...last };

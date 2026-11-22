@@ -65,4 +65,35 @@ describe("vps-deploy reusable workflow", () => {
     expect(final.if).toBe("${{ always() }}");
     expect(String(final.run)).toContain('"$STATUS" != "succeeded"');
   });
+
+  it("exposes notification outputs from the always-run record step", () => {
+    const on = isObject(workflow.on) ? workflow.on : {};
+    const call = isObject(on.workflow_call) ? on.workflow_call : {};
+    const outputs = isObject(call.outputs) ? call.outputs : {};
+    const jobOutputs = isObject(deploy.outputs) ? deploy.outputs : {};
+    for (const name of ["deployment-outcome", "failed-phase", "failure-category", "migration-status", "restoration-outcome"]) {
+      expect(isObject(outputs[name]) ? outputs[name].value : undefined).toBe(`\${{ jobs.deploy.outputs.${name} }}`);
+      expect(jobOutputs[name]).toBe(`\${{ steps.record.outputs.${name} }}`);
+    }
+  });
+
+  it("keeps alert delivery out of the deployment job so it cannot change the deployment result", () => {
+    expect(source).not.toMatch(/curl|webhook|notify|continue-on-error/iu);
+    const names = steps.map((step) => step.name);
+    expect(names.at(-1)).toBe("Require a successful deployment");
+  });
+
+  it.each(["dotnet", "nextjs"])("%s example alerts from a separate caller-owned job on deployment failure", (example) => {
+    const caller = new YamlValidator().load(join(root, "examples", example, "ci.yml"));
+    const callerJobs = isObject(caller.jobs) ? caller.jobs : {};
+    const notify = isObject(callerJobs["notify-deployment-failure"]) ? callerJobs["notify-deployment-failure"] : {};
+    expect(notify.needs).toBe("deploy-production");
+    expect(String(notify.if)).toContain("needs.deploy-production.result == 'failure'");
+    expect(notify.permissions).toEqual({});
+    const text = JSON.stringify(notify);
+    expect(text).toContain("secrets.DEPLOY_ALERT_WEBHOOK_URL");
+    expect(text).toContain("needs.deploy-production.outputs.deployment-outcome");
+    const run = (Array.isArray(notify.steps) ? notify.steps : []).filter(isObject).map((step) => String(step.run ?? "")).join("\n");
+    expect(run).not.toMatch(/\$\{\{/u);
+  });
 });

@@ -124,7 +124,13 @@ export class DockerCompose {
     return result.code === 0;
   }
 
-  /** Run the one-shot migration service attached; the container is kept for diagnostics until cleanup. */
+  /**
+   * Run the one-shot migration service attached; the container is kept for
+   * diagnostics until cleanup. Success evidence is the container's own recorded
+   * termination state, never the CLI exit code or a health status: `exitCode` is
+   * set only when the container exists and has stopped. `created: false` means
+   * the migrator never started (for example a dependency failed to start).
+   */
   async runOneShot(project, service, containerName, { timeoutMs }) {
     const args = [...this.composeArgs(project), "run", "--no-TTY", "--name", containerName, "--quiet-pull", service];
     const result = await this.run(this.docker, args, { env: this.env(), timeoutMs, maxOutput: 1 });
@@ -134,11 +140,13 @@ export class DockerCompose {
     const inspect = await this.run(this.docker, ["container", "inspect", "--format", "{{json .State}}", containerName], { env: this.env() });
     let state = null;
     if (inspect.code === 0) { try { state = JSON.parse(inspect.stdout); } catch { state = null; } }
+    const running = Boolean(state?.Running);
     return {
       timedOut: result.timedOut,
       created: state !== null,
-      exitCode: state && typeof state.ExitCode === "number" ? state.ExitCode : (result.timedOut ? null : result.code),
-      running: Boolean(state?.Running),
+      exitCode: state && !running && typeof state.ExitCode === "number" ? state.ExitCode : null,
+      running,
+      commandCode: result.timedOut ? null : result.code,
     };
   }
 
@@ -147,21 +155,36 @@ export class DockerCompose {
     return result.code === 0;
   }
 
-  async oneShotContainers(projectName, service) {
+  /** One-off containers of a service; `running: true` lists only those still executing. */
+  async oneShotContainers(projectName, service, { running = false } = {}) {
     const result = await this.run(this.docker, [
       "container", "ls", "--all", "--quiet",
       "--filter", `label=com.docker.compose.project=${projectName}`,
       "--filter", `label=com.docker.compose.service=${service}`,
       "--filter", "label=com.docker.compose.oneoff=True",
+      ...(running ? ["--filter", "status=running"] : []),
     ], { env: this.env() });
-    return result.code === 0 ? result.stdout.split(/\s+/u).filter(Boolean) : [];
+    if (result.code !== 0) {
+      if (running) fail("migration", "could not determine whether an earlier migration container is still running");
+      return [];
+    }
+    return result.stdout.split(/\s+/u).filter(Boolean);
   }
 
-  /** Container state for a project, normalized from `docker compose ps --format json`. */
+  /**
+   * Container state for a project, normalized from `docker compose ps --format json`,
+   * with each container's Docker restart count so health verification can detect
+   * a container that terminated and was restarted by its restart policy.
+   */
   async ps(projectName) {
     const result = await this.run(this.docker, ["compose", "--project-name", projectName, "ps", "--all", "--format", "json"], { env: this.env() });
     if (result.code !== 0) return null;
-    return parseComposePs(result.stdout);
+    const entries = parseComposePs(result.stdout);
+    const ids = entries.map((entry) => entry.id).filter((id) => /^[a-f0-9]{12,64}$/u.test(id));
+    if (ids.length === 0) return entries;
+    const inspect = await this.run(this.docker, ["container", "inspect", "--format", "{{.Id}} {{.RestartCount}}", ...ids], { env: this.env() });
+    const counts = parseRestartCounts(inspect.stdout);
+    return entries.map((entry) => ({ ...entry, restartCount: restartCountFor(counts, entry.id) }));
   }
 
   /** Generation labels recorded on every container (running or stopped) of a project. */
@@ -173,6 +196,21 @@ export class DockerCompose {
     if (result.code !== 0) return null;
     return result.stdout.split(/\r?\n/u).map((line) => line.trim().split(/\s+/u)).filter((parts) => parts.length === 2 && parts[1]).map(([service, generation]) => ({ service, generation }));
   }
+}
+
+export function parseRestartCounts(text) {
+  const counts = new Map();
+  for (const line of String(text ?? "").split(/\r?\n/u)) {
+    const match = /^([a-f0-9]{64}) (\d{1,9})$/u.exec(line.trim());
+    if (match) counts.set(match[1], Number(match[2]));
+  }
+  return counts;
+}
+
+function restartCountFor(counts, id) {
+  if (!id) return null;
+  for (const [full, count] of counts) if (full.startsWith(id)) return count;
+  return null;
 }
 
 export function parseComposePs(text) {

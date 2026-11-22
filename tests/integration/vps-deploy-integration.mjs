@@ -392,6 +392,9 @@ await check("database migration failure blocks application rollout", async () =>
   setStackEnv("HEALTH_PATH=/health\nMIGRATION_EXIT=3\nMIGRATION_SLEEP=0\n");
   const result = await expectUnchanged("migration", () => backendEngine().deploy(backendEnvelope(current, { app: "v2" })), "migration");
   assert.equal(result.migration.exitCode, 3);
+  assert.equal(result.migration.status, "failed");
+  assert.equal(result.migration.databaseMayHaveChanged, true);
+  assert.equal(result.outcome, "failed-before-rollout");
   assert.notEqual(container("itest-backend", "migrator") || sh("docker", ["ps", "-aq", "--filter", `name=${result.migration.container}`]), "", "failed migration container is retained for diagnosis");
 });
 
@@ -399,6 +402,7 @@ await check("database migration timeout fails the deployment", async () => {
   setStackEnv("HEALTH_PATH=/health\nMIGRATION_EXIT=0\nMIGRATION_SLEEP=30\n");
   const result = await expectUnchanged("migration timeout", () => backendEngine().deploy(backendEnvelope(current, { app: "v2", migrationTimeout: 3 })), "migration");
   assert.equal(result.migration.timedOut, true);
+  assert.equal(result.migration.status, "timed-out");
   setStackEnv("HEALTH_PATH=/health\nMIGRATION_EXIT=0\nMIGRATION_SLEEP=0\n");
 });
 
@@ -430,6 +434,72 @@ await check("failed restoration is reported explicitly with diagnostics", async 
   setStackEnv("HEALTH_PATH=/health\nMIGRATION_EXIT=0\nMIGRATION_SLEEP=0\n");
   const recovered = await backendEngine().deploy(backendEnvelope(current, { app: "v2" }));
   assert.equal(recovered.status, "succeeded", "operator recovery by redeploying the known-good release");
+});
+
+await check("unavailable migration dependency blocks rollout and reports a migrator that never started", async () => {
+  const compose = backendCompose().replace("    networks: [private]\nnetworks:\n", `    networks: [private]
+    depends_on:
+      blocker:
+        condition: service_healthy
+  blocker:
+    profiles: ["migration"]
+    image: docker.io/itest/app@${digests["app-v1"]}
+    user: "10001"
+    read_only: true
+    command: ["sh", "-c", "sleep 600"]
+    healthcheck:
+      test: ["CMD", "false"]
+      interval: 1s
+      timeout: 1s
+      retries: 1
+    networks: [private]
+networks:
+`);
+  assert.match(compose, /blocker:/u);
+  try {
+    const result = await expectUnchanged("migration dependency", () => backendEngine().deploy(backendEnvelope(nextId(), { app: "v2", compose })), "migration");
+    assert.equal(result.migration.status, "not-started", JSON.stringify(result.migration));
+    assert.equal(result.migration.started, false);
+    assert.equal(result.migration.databaseMayHaveChanged, false);
+    assert.equal(result.outcome, "failed-before-rollout");
+    assert.match(result.failure.message, /could not be started/u);
+  } finally {
+    const blockers = sh("docker", ["ps", "-aq", "--filter", "label=com.docker.compose.project=itest-backend", "--filter", "label=com.docker.compose.service=blocker"]);
+    if (blockers) tryRun("docker", ["rm", "-f", ...blockers.split(/\s+/u)]);
+  }
+});
+
+await check("a migrator left running by an interrupted deployment blocks the next deployment and is not removed", async () => {
+  const leftover = sh("docker", [
+    "run", "-d", "--name", "itest-interrupted-migrator",
+    "--label", "com.docker.compose.project=itest-backend", "--label", "com.docker.compose.service=migrator", "--label", "com.docker.compose.oneoff=True",
+    "--entrypoint", "sleep", `docker.io/itest/migrator@${digests["migrator-v1"]}`, "300",
+  ]);
+  try {
+    const result = await expectUnchanged("interrupted migration", () => backendEngine().deploy(backendEnvelope(nextId(), { app: "v2" })), "migration");
+    assert.match(result.failure.message, /interrupted deployment is still running/u);
+    assert.equal(result.migration.status, "not-started");
+    assert.equal(state(leftover), "running", "the interrupted migrator must not be stopped or removed");
+  } finally {
+    tryRun("docker", ["rm", "-f", leftover]);
+  }
+});
+
+await check("a container restarted by its restart policy fails health and the previous release is restored", async () => {
+  const compose = backendCompose().replace('command: ["sh", "-c", "while true; do sleep 3600; done"]', 'command: ["sh", "-c", "sleep 2; exit 1"]\n    restart: always');
+  assert.match(compose, /restart: always/u);
+  const previousWorker = container("itest-backend", "worker");
+  const result = await backendEngine().deploy(backendEnvelope(nextId(), { app: "v2", compose, healthServices: ["api", "worker"] }));
+  assert.equal(result.status, "restored-after-failure", JSON.stringify(result.failure));
+  assert.equal(result.outcome, "restored-after-failure");
+  assert.equal(result.failedPhase, "health");
+  assert.match(result.failure.message, /worker/u);
+  assert.equal(result.migration.status, "succeeded");
+  assert.equal(active().deploymentId, current);
+  const worker = container("itest-backend", "worker");
+  assert.notEqual(worker, previousWorker);
+  assert.equal(state(worker), "running");
+  assert.equal(sh("docker", ["inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", worker]), "no");
 });
 
 await check("concurrent deployments to the same stack are serialized", async () => {

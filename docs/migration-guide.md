@@ -35,10 +35,23 @@ The `.NET CI`, Next.js CI, OCI publishing, and VPS deployment workflows are impl
 
 1. Prepare the host as described in [VPS deployment operations](vps-deployment.md#initial-vps-preparation): install the helper, create the `vps-deploy` account (not in `docker`), register the stack, add its sudoers line and stack-bound `authorized_keys` entry, provision DEVOPS-007 instances for secret-bearing services, and enable the stack unit with its generated boot drop-in.
 2. Commit an application-owned production Compose file. Use the [backend](../examples/dotnet/compose.production.yml) and [frontend](../examples/nextjs/compose.production.yml) references: no tags for release components, digest-pinned infrastructure images, loopback or registry-approved ports, own-generation secret mounts with `restart: "no"`, and non-root users.
-3. Backend only: make the migrator exit after migrating, move it into a non-default profile, and remove `depends_on` from WebAPI, Consumer, and Jobs to the migrator. The current template's `docker-compose.production.yml` still has a perpetual migrator, `build:` sections, and published ports, so it does not yet satisfy the host policy.
+3. Backend only: make the DatabaseMigrator a run-to-completion process, move it into a non-default profile, and remove `depends_on` from WebAPI, Consumer, and Jobs to the migrator. The current template's migrator is a `WebApplication` whose background worker migrates and then loops forever while serving `/health/*`. Under `vps-deploy.yml` that run reaches `migration-timeout-seconds`, is killed, and is reported as `timed-out`, even though the database was migrated. The migrator must instead:
+   - apply migrations and pre/post-deployment scripts, then **exit** with code `0` on success and a nonzero code on any failure (for example a console host or `Host` that sets `Environment.ExitCode` and returns, rather than catching the exception and idling);
+   - drop the HTTP health endpoints and the Compose `healthcheck` (exit status is the only success signal);
+   - keep each migration idempotent, because a retried deployment re-runs it;
+   - follow [expand/migrate/contract](vps-deployment.md#database-compatibility-expand-migrate-contract) so the previous release still works if rollout fails after the migration.
+
+   The template's `docker-compose.production.yml` also has `build:` sections and published ports, so it does not yet satisfy the host policy.
 4. Create a protected GitHub Environment holding the six named secrets, with a Docker Hub **read-only** token and a dedicated deploy key, and require reviewers.
-5. Add a deploy job after publishing (see the consumer examples). Point it at `feature/devops-009-vps-compose-deployment` only for smoke testing on a non-production VPS, and rehearse a deliberate health failure (expect `restored-after-failure`) and a migration failure.
-6. Replace the reference with an immutable release tag or full commit SHA before production use.
+5. Add a deploy job after publishing (see the consumer examples). Point it at the toolkit feature branch only for smoke testing on a non-production VPS, and rehearse a deliberate health failure (expect `restored-after-failure`) and a migration failure (expect `failed-before-rollout` with `migration-status: failed`).
+6. Add a caller-owned failure notification job ([Failure notification](workflow-contracts.md#failure-notification)) with the alert endpoint in a caller GitHub secret, and confirm an alert actually arrives during the rehearsal. A red workflow run alone does not notify anyone.
+7. Replace the reference with an immutable release tag or full commit SHA before production use.
+
+Callers that already consume `vps-deploy.yml` need no change for DEVOPS-010: the new outputs are additive. The host-side hardening takes effect only after reinstalling the helper (`install-vps-deploy.sh`) from the matching toolkit revision. Until then, the runner still derives the new outputs from an older helper's result. Behavior is stricter in three cases, all of which used to risk an incorrect success:
+
+- A migrator that leaves no terminated container is now `not-started` and fails.
+- A migration container still running from an interrupted deployment now blocks the deployment instead of being force-removed.
+- A required container that Docker restarts during health verification now fails health.
 
 ## Adopting OCI publishing before the first release
 

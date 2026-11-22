@@ -105,6 +105,21 @@ on:
       deployment-record-artifact:
         description: Sanitized audit record artifact name
         value: ${{ jobs.deploy.outputs.deployment-record-artifact }}
+      deployment-outcome:
+        description: succeeded, failed-before-rollout, restored-after-failure, restoration-failed, failed-restoration-disabled, failed-no-previous-release, or unknown
+        value: ${{ jobs.deploy.outputs.deployment-outcome }}
+      failed-phase:
+        description: Deployment phase that failed, empty on success
+        value: ${{ jobs.deploy.outputs.failed-phase }}
+      failure-category:
+        description: Sanitized failure category, empty on success
+        value: ${{ jobs.deploy.outputs.failure-category }}
+      migration-status:
+        description: not-configured, not-run, not-started, failed, timed-out, succeeded, or unknown
+        value: ${{ jobs.deploy.outputs.migration-status }}
+      restoration-outcome:
+        description: not-required, restored, failed, disabled, no-previous-release, or unknown
+        value: ${{ jobs.deploy.outputs.restoration-outcome }}
 
 permissions:
   contents: read
@@ -125,6 +140,11 @@ jobs:
       deployed-id: ${{ steps.record.outputs.deployed-id }}
       previous-deployment-id: ${{ steps.record.outputs.previous-deployment-id }}
       deployment-record-artifact: ${{ steps.record.outputs.record-artifact }}
+      deployment-outcome: ${{ steps.record.outputs.deployment-outcome }}
+      failed-phase: ${{ steps.record.outputs.failed-phase }}
+      failure-category: ${{ steps.record.outputs.failure-category }}
+      migration-status: ${{ steps.record.outputs.migration-status }}
+      restoration-outcome: ${{ steps.record.outputs.restoration-outcome }}
     env:
       ENVIRONMENT: ${{ inputs.environment }}
       DEPLOYMENT_ID: ${{ inputs.deployment-id }}
