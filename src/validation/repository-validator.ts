@@ -87,6 +87,13 @@ export class RepositoryValidator {
       ),
     );
 
+    const stackSchema = join(repositoryRoot, "docs", "schemas", "vps-deploy-stack.schema.json");
+    ["dotnet", "nextjs"].forEach((example) => {
+      capture(errors, () =>
+        this.jsonValidator.validateDocument(join(repositoryRoot, "examples", example, "vps-deploy-stack.json"), stackSchema),
+      );
+    });
+
     files
       .filter((path) => scanExtensions.has(extname(path).toLowerCase()))
       .sort()

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chukwuemekanweke/devops-toolkit/docs/schemas/vps-deploy-stack.schema.json",
+  "title": "vps-deploy host stack registry",
+  "description": "Root-owned /etc/vps-deploy/stacks/<stackName>.json authorizing what a stack-bound deploy identity may change. The host helper applies additional semantic checks (reserved paths, overlap with other stacks, runtime-secret instance identity).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "stackName", "environment", "deploymentPath", "allowedSourceRepositories", "allowedImageRepositories"],
+  "properties": {
+    "version": { "const": 1 },
+    "stackName": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$" },
+    "environment": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "deploymentPath": { "type": "string", "pattern": "^(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){2,16}$" },
+    "allowedSourceRepositories": {
+      "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" }
+    },
+    "allowedImageRepositories": {
+      "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^docker\\.io/[a-z0-9]+(?:[._-][a-z0-9]+)*/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/?)*$" }
+    },
+    "runtimeSecrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["services"],
+      "properties": {
+        "services": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["instance"],
+            "properties": {
+              "instance": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,26}$" },
+              "startAtBoot": { "type": "boolean", "default": true }
+            }
+          }
+        }
+      }
+    },
+    "publicPorts": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } },
+    "allowedBindSources": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^/.+/$" } },
+    "allowedExternalNetworks": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" } },
+    "allowedExternalVolumes": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" } },
+    "allowedCapabilities": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?:CAP_)?[A-Z_]{2,32}$" } },
+    "healthCheckHosts": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9.:-]{1,253}$" } },
+    "lockTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 7200, "default": 1800 }
+  }
+}

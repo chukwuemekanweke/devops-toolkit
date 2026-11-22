@@ -14,7 +14,7 @@ Every caller grants the smallest token permission set and maps only named secret
 | Docker build package restore | `github-packages-username`, `github-packages-token` | Read-only package access, mounted only for explicitly selected components as `GITHUB_USERNAME`/`GITHUB_PAT` |
 | Docker Hub deploy/rollback | Separate registry read token | Pull-only; stored in the protected deployment environment |
 | Future GHCR publish | `GITHUB_TOKEN` | `contents: read`, `packages: write`; do not pre-grant until supported |
-| VPS access | Host, user, private key, pinned known-hosts entry | Dedicated deploy account limited to the application directory and required Docker operations |
+| VPS access | Host, user, private key, pinned known-hosts entry | Dedicated `vps-deploy` account outside the `docker` group; one key per application bound by a forced command to one stack; sudo permits only the constrained deploy helper for that stack ([operations guide](vps-deployment.md#trust-model-and-the-constrained-host-interface)) |
 | Runtime application secrets | Doppler service token per service config per host (host delivery implemented in DEVOPS-007) | Read-only, expiring, scoped to one branch config; encrypted systemd credential on the VPS; values delivered from restricted tmpfs as read-only service-scoped key files; never stored in GitHub Actions, containers, images, manifests, or durable plaintext by default |
 
 Do not use `secrets: inherit` as the normal contract. Never pass secrets as regular inputs or image-configuration values. Rotate package, registry, and SSH credentials on a defined schedule, immediately on suspected disclosure, and when maintainers lose access. Test replacement credentials before revoking the old value where safe.
@@ -23,7 +23,7 @@ Do not use `secrets: inherit` as the normal contract. Never pass secrets as regu
 
 1. **Caller repository to toolkit:** caller code and string inputs are untrusted. The toolkit validates JSON schemas, path containment, identifiers, numeric ranges, registry hosts, and service/filter lists before use. It quotes arguments and never evaluates input as shell.
 2. **Source repository to registry:** Docker builds execute repository-controlled Dockerfiles. Publishing secrets use BuildKit secret mounts, not build arguments. Digests returned by the registry become the release authority.
-3. **Runner to production VPS:** the runner authenticates a pinned host key and a restricted deploy identity. Only deploy/rollback workflows receive SSH and pull credentials.
+3. **Runner to production VPS:** the runner authenticates a pinned host key (`StrictHostKeyChecking=yes`, no wildcard entries) and a stack-bound deploy identity. Only deploy/rollback workflows receive SSH and pull credentials. The host treats the request as untrusted and re-validates it against a root-owned stack registry.
 4. **Deployment to runtime:** Compose and the application own runtime configuration and health meaning. The deployment process provides immutable images and does not leak its SSH/registry identity into containers.
 5. **Third-party Actions:** every action is reviewed and pinned to a full commit SHA. Human-readable version comments and automated dependency updates keep pins maintainable. Reusable toolkit releases are pinned to a major tag, immutable release tag, or SHA according to risk.
 
@@ -63,6 +63,19 @@ The [Doppler runtime secrets design](doppler/architecture.md) separates runtime 
 
 **Residual risk:** a compromised VPS root account, or a deploy account with Docker access, can read every service token and every secret delivered to containers on that host. Without IP allowlisting, stolen tokens remain usable off-host until revoked or expired. Doppler narrows the blast radius and makes rotation and revocation tractable; it does not remove the consequences of host compromise. See [rotation and revocation](doppler/rotation-and-revocation.md) for containment runbooks.
 
+## Deployment host interface
+
+`vps-deploy.yml` never runs remote shell commands built from inputs. Its only remote operation is the fixed word `deploy`, with one bounded JSON request on SSH stdin:
+
+- **Command injection:** the forced command ignores client-supplied text other than the exact operation `deploy`; the root helper receives the stack from the key binding and spawns Docker, Compose, `systemctl`, and `runuser` with argument arrays and a scrubbed environment, never a shell.
+- **Authorization:** the stack registry (`/etc/vps-deploy/stacks/<stack>.json`, root-owned) must agree with `environment`, `stack-name`, and `remote-deployment-path`, and authorizes source repositories and image namespaces (manifest provenance). Registries may not overlap paths or share runtime-secret instances.
+- **Docker daemon escalation:** before any container changes, the merged Compose model is rejected if it is privileged, joins host or foreign namespaces, mounts the Docker socket, another service's or stack's runtime secrets, or unapproved host paths, adds unapproved capabilities, publishes non-loopback ports outside the allowlist, uses `container_name`, `volumes_from`, `devices`, `env_file`, `include`, or `extends.file`, references a mutable image tag, or runs a release or secret-bearing service as root.
+- **Path traversal and symlinks:** Compose paths are validated on the runner (repository-contained, non-symlink) and only their content is transferred; host state uses fixed names, no-follow exclusive creation, atomic renames, and root-owned directories without symlinks.
+- **Credentials:** the pull-only registry token is written only to a private temporary Docker client configuration on tmpfs and removed after the operation; it is not in arguments, environment, history, or artifacts. Runtime secrets stay in DEVOPS-007 tmpfs generations; only generation ids are recorded, and `docker inspect` shows no values.
+- **Concurrency and corruption:** a stack-scoped lock serializes deploy and restore operations; `active.json` is replaced atomically only after health verification; manifests are write-once per deployment id.
+
+Residual risk: an attacker holding a stack's deploy key and passing the GitHub Environment can deploy any image from that stack's approved namespaces, and that image runs with access to that stack's runtime secrets. Root or Docker-daemon compromise on the host still exposes every stack. The helper runs as root, so its own correctness is security-critical; changes to it require security review.
+
 ## Supply-chain controls
 
 - Pin third-party actions to reviewed full-length commit SHAs; a moving tag is not immutable.
@@ -83,6 +96,6 @@ If a workflow supply-chain compromise is suspected, stop alias advancement, disa
 
 ## Repository validation controls
 
-The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Publishing tests cover duplicate JSON properties, repository/path containment, image identity, package credential pairing, digest and scan evidence, and complete aggregation. The .NET helper also rejects absolute paths, traversal, unsupported glob syntax, path escape through symlinks, invalid configurations/diagnostic IDs, unpaired credentials, and artifact retention outside 1–90 days. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container.
+The toolkit validation pipeline automatically rejects unpinned external Actions, `pull_request_target`, `secrets: inherit`, direct workflow-input interpolation in shell steps, duplicate YAML/JSON keys, schema-invalid fixtures, and undocumented implemented `workflow_call` interfaces. Publishing tests cover duplicate JSON properties, repository/path containment, image identity, package credential pairing, digest and scan evidence, and complete aggregation. The .NET helper also rejects absolute paths, traversal, unsupported glob syntax, path escape through symlinks, invalid configurations/diagnostic IDs, unpaired credentials, and artifact retention outside 1–90 days. Actionlint runs through a reviewed wrapper pinned to a full commit SHA, and that wrapper executes a digest-pinned actionlint container. VPS deployment tests cover manifest, request, SSH-target, Compose-policy, registry, and state-machine rejection cases, and two privileged Linux harnesses (Docker-in-Docker with real Compose, the SSH forced command, and sudo; and a booted systemd host) exercise real deployment, restoration, secret mounts, and boot ordering.
 
 Automation does not replace review of an Action's source and release notes, credential scope, whether a permission is operationally necessary, shell argument construction that is indirect, or the trustworthiness of test fixtures. Pull requests changing workflows, dependencies, permissions, secrets, schemas, or deployment behavior must record that manual review and testing evidence.

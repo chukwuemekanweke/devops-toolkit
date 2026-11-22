@@ -11,6 +11,8 @@
     "test": "vitest run",
     "test:runtime-secrets:linux": "vitest run tests/runtime-secrets.test.ts",
     "validate:systemd": "bash scripts/validate-runtime-secrets-systemd.sh",
+    "test:vps-deploy:linux": "bash tests/integration/vps-deploy-docker.sh",
+    "test:vps-deploy:systemd": "bash tests/integration/vps-deploy-systemd.sh",
     "validate": "tsx src/validation/index.ts"
   },
   "dependencies": {

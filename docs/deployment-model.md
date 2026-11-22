@@ -64,36 +64,40 @@ The manifest is canonicalized with UTF-8 encoding and stable key order before ca
 
 Aggregation is atomic at the manifest boundary. A failed build, push, scan, or missing/invalid component result prevents the aggregation job and therefore prevents a deployable manifest. Registry pushes completed before another component fails can remain and are subject to registry lifecycle policy; their existence alone is not a successful release.
 
-## Suggested remote state
+## Remote state
 
-The later deployment implementation should use a dedicated application/environment root similar to:
+`vps-deploy.yml` (DEVOPS-009) uses the dedicated application/environment root registered for each stack in its root-owned host stack registry:
 
 ```text
 /srv/example/production/
-  active-manifest.json
-  manifests/<deployment-id>.json
-  releases/<deployment-id>/
-  history/deployments.jsonl
-  lock
+  lock                                   stack-scoped operation lock
+  active.json                            authoritative active release record (atomic commit point)
+  active-manifest.json                   copy of the active immutable manifest
+  previous.json, previous-manifest.json  last superseded successful release
+  manifests/<deployment-id>.json         write-once canonical manifest copies
+  releases/<deployment-id>/<attempt>/    staged Compose files, generated image override, request record
+  history/deployments.jsonl              append-only sanitized records
+  runtime/generations.override.json      derived runtime-secret generation labels
+  stack.env                              optional operator-owned non-secret interpolation values
 ```
 
-Exact layout is an implementation detail within a major version, but updates must be locked, staged, and atomically activated. Application secrets are supplied through the [implemented Doppler host primitive](doppler/vps-bootstrap.md), mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts. Rendered secrets live on restricted tmpfs under `/run/runtime-secrets/<application>/<environment>/<service>/`, as immutable generations behind `pending`, `current`, and `previous`. Deployment history records generation IDs only, never values or value hashes.
+Updates are locked, staged, and atomically activated; the layout is versioned with the workflow ([operations guide](vps-deployment.md#remote-state)). Application secrets are supplied through the [implemented Doppler host primitive](doppler/vps-bootstrap.md), mounted read-only by Compose, and remain outside GitHub Actions and audit artifacts. Rendered secrets live on restricted tmpfs under `/run/runtime-secrets/<application>/<environment>/<service>/`, as immutable generations behind `pending`, `current`, and `previous`. Deployment history records generation IDs only, never values or value hashes.
 
 ## Runtime secret ordering
 
-The planned `vps-deploy.yml` implementation consumes the host CLI but owns this ordering:
+`vps-deploy.yml` consumes the DEVOPS-007 host interface (systemd lifecycle units and the status/prune CLI) and owns this ordering:
 
-1. Render every service's secrets to pending generations before migration. A render failure fails the deployment with nothing changed.
-2. Render the migrator's schema-owner credential only for the migration run, and delete it afterwards.
+1. Render every registered service's secrets to pending generations before migration. A render failure discards what was rendered and fails the deployment with nothing changed.
+2. Activate the migrator's generation only for the migration run. DEVOPS-007 has no deactivate operation, so it stays `current` on tmpfs until a later prune removes older generations or the host reboots.
 3. Activate remaining generations (activation itself is not a health verdict).
-4. Recreate services whose generation changed; restart alone does not retarget a bind mount.
-5. Verify application health. On failure, restore retained generations and recreate again.
+4. Recreate services whose generation changed: generation ids are container labels, so Compose recreates exactly those containers. Restart alone is not relied upon to retarget a bind mount.
+5. Verify application health. On failure, restore retained generations and the previous images, and recreate again.
 
-Restore-after-failure restores the previous images and generations together. `vps-rollback.yml` restores image digests and keeps the current secret generation by default, because secrets are environment state. These are design commitments for the deployment tickets. The public workflow contracts are unchanged.
+Restore-after-failure restores the previous images and generations together. `vps-rollback.yml` (not yet implemented) restores image digests and keeps the current secret generation by default, because secrets are environment state.
 
 ## Migration, health, and availability
 
-For the backend, the configured DatabaseMigrator image runs as a release-scoped one-shot Compose service. Its explicit successful exit is required before WebAPI, Consumer, or Jobs are released; container health alone is not proof that a migration completed. Failure blocks dependent services, records the failed attempt, and does not run an automatic reverse migration. Next.js stacks leave `migration-service` empty. The current backend template's migrator keeps running after it migrates and reports success through health. It must exit with a status code before it can satisfy this contract ([template findings](doppler/architecture.md#template-findings-that-affect-adoption)).
+For the backend, the configured DatabaseMigrator image runs as a release-scoped one-shot Compose service (`docker compose run`, bounded by `migration-timeout-seconds`; it belongs in a non-default Compose profile and long-running services must not depend on it). Its explicit successful exit is required before WebAPI, Consumer, or Jobs are released; container health alone is not proof that a migration completed. Failure blocks dependent services, records the failed attempt, and does not run an automatic reverse migration. Next.js stacks leave `migration-service` empty. The current backend template's migrator keeps running after it migrates and reports success through health. It must exit with a status code before it can satisfy this contract ([template findings](doppler/architecture.md#template-findings-that-affect-adoption)).
 
 After migration, Compose service state and configured HTTP endpoints gate activation. Rollback changes application image digests only and is eligible only when the previous application remains compatible with the current database. Expand/migrate/contract schema practices preserve that window.
 

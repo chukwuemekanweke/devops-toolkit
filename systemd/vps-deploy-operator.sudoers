@@ -1,0 +1,6 @@
+# Install as /etc/sudoers.d/vps-deploy (mode 0440) after `visudo -cf`.
+# One line per registered stack; replace STACK with the exact stack name. The
+# deploy account gains no shell, Docker group membership or arbitrary command
+# execution: only the constrained helper, with fixed arguments, as root.
+Defaults:vps-deploy env_reset, !setenv, secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+vps-deploy ALL=(root) NOPASSWD: /usr/bin/node /opt/vps-deploy/scripts/vps-deploy-host.mjs deploy --stack STACK

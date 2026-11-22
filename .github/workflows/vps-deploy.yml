@@ -1,0 +1,257 @@
+name: Reusable VPS deployment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Caller GitHub Environment name and deployment/audit label
+        type: string
+        required: true
+      deployment-id:
+        description: Must equal the manifest deployment ID
+        type: string
+        required: true
+      manifest-json:
+        description: Inline release manifest; mutually exclusive with manifest-artifact
+        type: string
+        required: false
+        default: ""
+      manifest-artifact:
+        description: Same-run release manifest artifact name; mutually exclusive with manifest-json
+        type: string
+        required: false
+        default: ""
+      compose-files:
+        description: Newline-separated repository-relative Compose files, applied in order
+        type: string
+        required: true
+      stack-name:
+        description: Compose project name of this independent stack
+        type: string
+        required: true
+      component-service-map:
+        description: JSON object mapping manifest components to Compose services
+        type: string
+        required: false
+        default: "{}"
+      remote-deployment-path:
+        description: Absolute deployment root registered for this stack on the host
+        type: string
+        required: true
+      ssh-port:
+        description: Remote SSH port
+        type: number
+        required: false
+        default: 22
+      migration-service:
+        description: One-shot Compose migration service; empty disables migration
+        type: string
+        required: false
+        default: ""
+      migration-timeout-seconds:
+        description: Migration timeout
+        type: number
+        required: false
+        default: 600
+      health-services:
+        description: Newline-separated services that must become healthy; empty verifies all long-running services
+        type: string
+        required: false
+        default: ""
+      health-checks:
+        description: JSON array of host-side HTTP checks
+        type: string
+        required: false
+        default: "[]"
+      health-timeout-seconds:
+        description: Post-start health deadline
+        type: number
+        required: false
+        default: 300
+      rollback-on-health-failure:
+        description: Restore the previous release after a failed rollout; the job still fails
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      ssh-host:
+        description: Target hostname or IP
+        required: true
+      ssh-user:
+        description: Dedicated stack-bound deployment account
+        required: true
+      ssh-private-key:
+        description: Deployment private key bound to one stack by a forced command
+        required: true
+      ssh-known-hosts:
+        description: Pinned host key entries
+        required: true
+      registry-username:
+        description: Pull-only registry username
+        required: true
+      registry-token:
+        description: Pull-only registry token
+        required: true
+    outputs:
+      deployment-status:
+        description: succeeded, failed, or restored-after-failure
+        value: ${{ jobs.deploy.outputs.deployment-status }}
+      deployed-id:
+        description: Deployment ID that passed health, empty on failure
+        value: ${{ jobs.deploy.outputs.deployed-id }}
+      previous-deployment-id:
+        description: Previously active recorded deployment, empty on first deployment
+        value: ${{ jobs.deploy.outputs.previous-deployment-id }}
+      deployment-record-artifact:
+        description: Sanitized audit record artifact name
+        value: ${{ jobs.deploy.outputs.deployment-record-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.stack-name }} to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ inputs.environment }}-${{ inputs.stack-name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    outputs:
+      deployment-status: ${{ steps.record.outputs.deployment-status }}
+      deployed-id: ${{ steps.record.outputs.deployed-id }}
+      previous-deployment-id: ${{ steps.record.outputs.previous-deployment-id }}
+      deployment-record-artifact: ${{ steps.record.outputs.record-artifact }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+      STACK_NAME: ${{ inputs.stack-name }}
+      CALLER_REPOSITORY: ${{ github.repository }}
+      CALLER_SHA: ${{ github.sha }}
+      CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+      ACTOR: ${{ github.actor }}
+      EVENT_NAME: ${{ github.event_name }}
+      SERVER_URL: ${{ github.server_url }}
+    steps:
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Validate deployment inputs
+        id: inputs
+        env:
+          MANIFEST_JSON: ${{ inputs.manifest-json }}
+          MANIFEST_ARTIFACT: ${{ inputs.manifest-artifact }}
+          COMPOSE_FILES: ${{ inputs.compose-files }}
+          COMPONENT_SERVICE_MAP: ${{ inputs.component-service-map }}
+          REMOTE_DEPLOYMENT_PATH: ${{ inputs.remote-deployment-path }}
+          SSH_PORT: ${{ inputs.ssh-port }}
+          MIGRATION_SERVICE: ${{ inputs.migration-service }}
+          MIGRATION_TIMEOUT_SECONDS: ${{ inputs.migration-timeout-seconds }}
+          HEALTH_SERVICES: ${{ inputs.health-services }}
+          HEALTH_CHECKS: ${{ inputs.health-checks }}
+          HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+          ROLLBACK_ON_HEALTH_FAILURE: ${{ inputs.rollback-on-health-failure }}
+          TOOLKIT_REPOSITORY: ${{ steps.toolkit.outputs.repository }}
+          TOOLKIT_SHA: ${{ steps.toolkit.outputs.sha }}
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs inputs
+
+      - name: Check out caller Compose definitions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: caller
+          persist-credentials: false
+
+      - name: Download release manifest artifact
+        if: ${{ steps.inputs.outputs.manifest-artifact != '' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ steps.inputs.outputs.manifest-artifact }}
+          path: ${{ runner.temp }}/vps-deploy-manifest
+
+      - name: Validate release and Compose files
+        id: prepare
+        env:
+          CALLER_WORKSPACE: ${{ github.workspace }}/caller
+          MANIFEST_JSON: ${{ inputs.manifest-json }}
+          MANIFEST_ARTIFACT: ${{ inputs.manifest-artifact }}
+          MANIFEST_ARTIFACT_DIRECTORY: ${{ runner.temp }}/vps-deploy-manifest
+          COMPOSE_FILES: ${{ inputs.compose-files }}
+          COMPONENT_SERVICE_MAP: ${{ inputs.component-service-map }}
+          REMOTE_DEPLOYMENT_PATH: ${{ inputs.remote-deployment-path }}
+          SSH_PORT: ${{ inputs.ssh-port }}
+          MIGRATION_SERVICE: ${{ inputs.migration-service }}
+          MIGRATION_TIMEOUT_SECONDS: ${{ inputs.migration-timeout-seconds }}
+          HEALTH_SERVICES: ${{ inputs.health-services }}
+          HEALTH_CHECKS: ${{ inputs.health-checks }}
+          HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+          ROLLBACK_ON_HEALTH_FAILURE: ${{ inputs.rollback-on-health-failure }}
+          TOOLKIT_REPOSITORY: ${{ steps.toolkit.outputs.repository }}
+          TOOLKIT_SHA: ${{ steps.toolkit.outputs.sha }}
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs prepare
+
+      - name: Deploy through the constrained host interface
+        id: remote
+        env:
+          SSH_HOST: ${{ secrets.ssh-host }}
+          SSH_USER: ${{ secrets.ssh-user }}
+          SSH_PRIVATE_KEY: ${{ secrets.ssh-private-key }}
+          SSH_KNOWN_HOSTS: ${{ secrets.ssh-known-hosts }}
+          REGISTRY_USERNAME: ${{ secrets.registry-username }}
+          REGISTRY_TOKEN: ${{ secrets.registry-token }}
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs remote
+
+      - name: Write sanitized deployment record
+        id: record
+        if: ${{ always() }}
+        env:
+          TOOLKIT_REPOSITORY: ${{ steps.toolkit.outputs.repository }}
+          TOOLKIT_SHA: ${{ steps.toolkit.outputs.sha }}
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs record
+
+      - name: Upload deployment record
+        if: ${{ always() && steps.record.outputs.record-artifact != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.record.outputs.record-artifact }}
+          path: ${{ runner.temp }}/vps-deploy/deployment-record.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Remove transient deployment material
+        if: ${{ always() }}
+        shell: bash
+        run: rm -rf -- "$RUNNER_TEMP"/vps-deploy/ssh-* "$RUNNER_TEMP"/vps-deploy/bundle.json "$RUNNER_TEMP"/vps-deploy/result.json
+
+      - name: Require a successful deployment
+        if: ${{ always() }}
+        shell: bash
+        env:
+          STATUS: ${{ steps.record.outputs.deployment-status }}
+        run: |
+          if [[ "$STATUS" != "succeeded" ]]; then
+            echo "Deployment status is '${STATUS:-unknown}'; the job fails even when automatic restoration succeeded." >&2
+            exit 1
+          fi

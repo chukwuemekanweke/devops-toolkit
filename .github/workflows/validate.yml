@@ -41,3 +41,21 @@ jobs:
       - name: Validate GitHub Actions workflows
         uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4 # v0.1.13
 
+  vps-deploy-linux:
+    name: VPS deployment Linux and systemd harnesses
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out toolkit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Both harnesses run in disposable privileged containers (Docker-in-Docker
+      # and a systemd host) and fail rather than skip when a check cannot run.
+      - name: Docker Compose deployment, restoration, SSH and secret-mount checks
+        run: bash tests/integration/vps-deploy-docker.sh
+
+      - name: systemd boot-ordering and runtime-secret unit checks
+        run: bash tests/integration/vps-deploy-systemd.sh
+

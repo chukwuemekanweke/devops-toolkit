@@ -1,6 +1,6 @@
 # Consumer migration guide
 
-The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deployment and rollback remain planned. Doppler runtime secret delivery is designed but not implemented. No `v1` release alias exists yet.
+The `.NET CI`, Next.js CI, OCI publishing, and VPS deployment workflows are implemented, as is the DEVOPS-007 host-side Doppler runtime-secret delivery. Rollback remains planned. No `v1` release alias exists yet.
 
 ## General migration
 
@@ -30,6 +30,15 @@ The `.NET CI`, Next.js CI, and OCI publishing workflows are implemented. Deploym
 - Use an empty filter for repository-wide Turborepo validation or a caller matrix with explicit `@template/...` filters for application-specific builds.
 - Keep User, Admin, and Public portals as independent entries in `.github/docker-images.json` and independent deployment lifecycles.
 - Keep build-time configuration non-secret and checked in where appropriate. Never put secrets in `NEXT_PUBLIC_*` variables or image `buildArgs`.
+
+## Adopting VPS deployment before the first release
+
+1. Prepare the host as described in [VPS deployment operations](vps-deployment.md#initial-vps-preparation): install the helper, create the `vps-deploy` account (not in `docker`), register the stack, add its sudoers line and stack-bound `authorized_keys` entry, provision DEVOPS-007 instances for secret-bearing services, and enable the stack unit with its generated boot drop-in.
+2. Commit an application-owned production Compose file. Use the [backend](../examples/dotnet/compose.production.yml) and [frontend](../examples/nextjs/compose.production.yml) references: no tags for release components, digest-pinned infrastructure images, loopback or registry-approved ports, own-generation secret mounts with `restart: "no"`, and non-root users.
+3. Backend only: make the migrator exit after migrating, move it into a non-default profile, and remove `depends_on` from WebAPI, Consumer, and Jobs to the migrator. The current template's `docker-compose.production.yml` still has a perpetual migrator, `build:` sections, and published ports, so it does not yet satisfy the host policy.
+4. Create a protected GitHub Environment holding the six named secrets, with a Docker Hub **read-only** token and a dedicated deploy key, and require reviewers.
+5. Add a deploy job after publishing (see the consumer examples). Point it at `feature/devops-009-vps-compose-deployment` only for smoke testing on a non-production VPS, and rehearse a deliberate health failure (expect `restored-after-failure`) and a migration failure.
+6. Replace the reference with an immutable release tag or full commit SHA before production use.
 
 ## Adopting OCI publishing before the first release
 

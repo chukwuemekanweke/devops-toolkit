@@ -1,4 +1,4 @@
-# Development smoke caller for reusable Next.js CI and OCI publishing. Replace
+# Development smoke caller for reusable Next.js CI, OCI publishing, and VPS deployment. Replace
 # feature branches with validated immutable release tags or full commit SHAs.
 name: Next.js CI
 
@@ -71,3 +71,33 @@ jobs:
     secrets:
       registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
       registry-token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # Deploys the three portals as one independent stack. No migration stage:
+  # migration-service is left at its empty default. The manifest is taken from
+  # the publish run's artifact to demonstrate the artifact transport.
+  deploy-production:
+    needs: publish-images
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+    uses: chukwuemekanweke/devops-toolkit/.github/workflows/vps-deploy.yml@feature/devops-009-vps-compose-deployment
+    with:
+      environment: production
+      deployment-id: ${{ needs.publish-images.outputs.deployment-id }}
+      manifest-artifact: ${{ needs.publish-images.outputs.manifest-artifact }}
+      compose-files: deploy/compose.production.yml
+      stack-name: example-frontend-production
+      remote-deployment-path: /srv/example-frontend/production
+      health-checks: >-
+        [
+          {"name":"user-portal","url":"http://127.0.0.1:3001/"},
+          {"name":"admin-portal","url":"http://127.0.0.1:3002/","expectedStatus":[200,307]},
+          {"name":"public-portal","url":"http://127.0.0.1:3003/"}
+        ]
+    secrets:
+      ssh-host: ${{ secrets.VPS_HOST }}
+      ssh-user: ${{ secrets.VPS_DEPLOY_USER }}
+      ssh-private-key: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
+      ssh-known-hosts: ${{ secrets.VPS_KNOWN_HOSTS }}
+      registry-username: ${{ secrets.DOCKERHUB_READ_USERNAME }}
+      registry-token: ${{ secrets.DOCKERHUB_READ_TOKEN }}
