@@ -1,0 +1,44 @@
+# Application-owned production Compose file for the three independently built
+# portals (illustrative content for deploy/compose.production.yml).
+#
+# The portals hold no runtime secrets today, so no DEVOPS-007 mounts are
+# declared and no migration stage runs. vps-deploy injects each portal's
+# immutable image digest through its generated override.
+x-portal: &portal
+  read_only: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp
+    - /app/.next/cache
+  environment:
+    NODE_ENV: production
+    HOSTNAME: 0.0.0.0
+    PORT: "3000"
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+    interval: 10s
+    timeout: 3s
+    retries: 30
+    start_period: 10s
+  networks:
+    - private
+
+services:
+  user-portal:
+    <<: *portal
+    ports:
+      # Loopback only: the host reverse proxy is an infrastructure prerequisite.
+      - "127.0.0.1:3001:3000"
+  admin-portal:
+    <<: *portal
+    ports:
+      - "127.0.0.1:3002:3000"
+  public-portal:
+    <<: *portal
+    ports:
+      - "127.0.0.1:3003:3000"
+
+networks:
+  private: {}

@@ -1,8 +1,9 @@
 # VPS runtime-secret delivery
 
-Status: **Implemented host primitive (DEVOPS-007).** This covers the toolkit helper and the contract that
-later deployment work consumes. It does not implement application changes (DEVOPS-008), deployment
-orchestration (DEVOPS-009), or provisioning automation (DEVOPS-010).
+Status: **Implemented host primitive (DEVOPS-007), orchestrated by `vps-deploy.yml` (DEVOPS-009).** This
+covers the toolkit helper and the contract that deployment consumes; deployment ordering and the stack boot
+unit are in [VPS deployment operations](../vps-deployment.md#runtime-secrets-devops-007-integration). It does
+not implement application changes (DEVOPS-008) or provisioning automation (DEVOPS-010).
 
 ## Data flow and boundaries
 
@@ -189,7 +190,8 @@ the old token.
 
 ```bash
 sudo systemctl start runtime-secrets-render@exb-prd-api.service
-sudo /usr/bin/node /opt/runtime-secrets/scripts/runtime-secrets.mjs status \
+# status verifies the service directory belongs to the caller, so run it as the render identity
+sudo runuser -u rsec-exb-prd-api -- /usr/bin/node /opt/runtime-secrets/scripts/runtime-secrets.mjs status \
   --instance /etc/runtime-secrets/instances/exb-prd-api.json
 sudo systemctl start runtime-secrets-activate@exb-prd-api.service
 sudo systemctl start runtime-secrets-discard@exb-prd-api.service
@@ -200,15 +202,20 @@ Use discard only for a rejected pending generation. After restore, recreate and 
 
 ## Boot ordering and outage recovery
 
-`run-runtime\x2dsecrets.mount` creates a `nodev,nosuid,noexec` tmpfs before Docker. Enable one
-`runtime-secrets-initialize@<id>.service` per secret-bearing service. The application stack unit declares
-`Requires=` and `After=` on every initializer. Secret-bearing Compose services use `restart: "no"` so
+`run-runtime\x2dsecrets.mount` creates a `nodev,nosuid,noexec` tmpfs before Docker. One
+`runtime-secrets-initialize@<id>.service` runs per boot-time secret-bearing service. The application stack
+unit (`vps-deploy-stack@<stack>.service`) declares `Requires=` and `After=` on every initializer through
+a generated drop-in, which pulls the initializers into the boot transaction. The initializer units have no
+`[Install]` section and are not enabled directly. Secret-bearing Compose services use `restart: "no"` so
 Docker cannot bypass initialization.
 
 ```bash
 sudo systemctl enable 'run-runtime\x2dsecrets.mount'
-sudo systemctl enable runtime-secrets-initialize@exb-prd-api.service
+sudo systemctl enable vps-deploy-stack@example-backend-production.service   # after installing its boot drop-in
 ```
+
+The Node.js units run with `--jitless` so `MemoryDenyWriteExecute=yes` can stay enabled. The render unit
+re-allows `@chown` after denying `@privileged`, because generation files are chowned to the service group.
 
 The mount is enabled so it exists before `systemd-tmpfiles-setup.service` recreates the root-owned parent
 and service leaf directories. The initializer is ordered after both.

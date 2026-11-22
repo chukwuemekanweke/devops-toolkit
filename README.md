@@ -10,17 +10,19 @@ The initial consumers are:
 
 ## Status
 
-This repository provides the governance and validation foundation for public contracts and the implemented .NET, Next.js, and OCI image publishing capabilities. Deployment capabilities stay explicitly planned until their implementation tickets land.
+This repository provides the governance and validation foundation for public contracts and the implemented .NET, Next.js, OCI image publishing, and VPS deployment capabilities. Rollback stays explicitly planned until its implementation ticket lands.
 
 | Workflow | Status | Capability |
 | --- | --- | --- |
 | `dotnet-ci.yml` | Implemented | Restore, format, build, unit test, Testcontainers integration test, and report coverage |
 | `nextjs-ci.yml` | Implemented | Install, lint, type-check, test, and build all or selected pnpm workspaces |
 | `docker-publish.yml` | Implemented | Validate, build, scan, and publish one or many OCI images and produce an immutable release manifest |
-| `vps-deploy.yml` | Planned | Deploy a manifest to a Docker Compose VPS and verify health |
+| `vps-deploy.yml` | Implemented | Deploy an immutable manifest to an independent Docker Compose stack on a VPS: runtime secrets, optional one-shot migration, health verification, automatic restoration, audit history |
 | `vps-rollback.yml` | Planned | Restore a recorded manifest without rebuilding source |
 
-DEVOPS-007 implements the host-side portion of the Doppler Developer-plan architecture: a pinned CLI adapter, strict versioned instance/key-manifest validation, isolated tmpfs key-per-file generations, atomic lifecycle commands, hardened systemd templates, and a read-only Compose contract. GitHub Actions and application containers never receive Doppler tokens or production values. Application adoption and deployment orchestration remain later tickets. See [Doppler runtime secrets](docs/doppler/architecture.md) and the [VPS operating guide](docs/doppler/vps-bootstrap.md).
+DEVOPS-007 implements the host-side portion of the Doppler Developer-plan architecture: a pinned CLI adapter, strict versioned instance/key-manifest validation, isolated tmpfs key-per-file generations, atomic lifecycle commands, hardened systemd templates, and a read-only Compose contract. GitHub Actions and application containers never receive Doppler tokens or production values. See [Doppler runtime secrets](docs/doppler/architecture.md) and the [VPS operating guide](docs/doppler/vps-bootstrap.md).
+
+DEVOPS-009 implements `vps-deploy.yml`. It deploys an application-owned Compose stack through a constrained host interface: each deploy key is bound to one stack by an SSH forced command, sudo allows only the toolkit's root helper, and a root-owned stack registry authorizes paths, provenance, and secrets. The helper locks the stack, stages and policy-checks the Compose model, pulls images by digest, renders DEVOPS-007 secrets before an optional one-shot migration, recreates only changed containers, verifies health, and either commits the release or restores the previous one. A systemd stack unit starts the active release at boot only after runtime-secret initialization. See [VPS deployment operations](docs/vps-deployment.md).
 
 The toolkit validates itself on pull requests and pushes to `main` through `.github/workflows/validate.yml`. It checks workflow syntax, YAML structure, schema fixtures, reference topologies, implemented reusable-workflow interfaces, and security invariants. It is a repository maintenance workflow, not a public reusable capability.
 
@@ -41,11 +43,11 @@ The toolkit validates itself on pull requests and pushes to `main` through `.git
 actions/             Composite actions only when step-level reuse is justified
 src/validation/      TypeScript repository, contract, schema, and security validation
 scripts/             Small, testable helpers used by workflows
-systemd/             Runtime-secret unit templates and host policy examples
-tests/               Vitest suites and positive/negative schema fixtures
+systemd/             Runtime-secret and deployment stack unit templates and sudoers policy examples
+tests/               Vitest suites, schema fixtures, and privileged Linux integration harnesses
 examples/
-  dotnet/            Thin .NET caller examples
-  nextjs/            Thin pnpm/Next.js caller examples
+  dotnet/            Thin .NET caller, production Compose, and host stack registry examples
+  nextjs/            Thin pnpm/Next.js caller, production Compose, and host stack registry examples
   runtime-secrets/   Application-owned host and Compose contract example
 docs/                Architecture, contracts, security, and operating policy
 ```
@@ -82,6 +84,7 @@ Never use `secrets: inherit` as the default. Map only the secrets named by the s
 - [Authoritative workflow contracts](docs/workflow-contracts.md)
 - [Application-owned image configuration](docs/image-configuration.md)
 - [Deployment and manifest model](docs/deployment-model.md)
+- [VPS deployment operations](docs/vps-deployment.md) (host preparation, Compose policy, health, recovery)
 - [Security architecture](docs/security.md)
 - [Doppler runtime secrets architecture](docs/doppler/architecture.md) (design)
   - [Secret inventory](docs/doppler/secret-inventory.md)

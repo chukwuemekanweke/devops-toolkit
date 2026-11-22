@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "stackName": "example-backend-production",
+  "environment": "production",
+  "deploymentPath": "/srv/example-backend/production",
+  "allowedSourceRepositories": ["chukwuemekanweke/dotnet-core-project-template"],
+  "allowedImageRepositories": ["docker.io/example/"],
+  "runtimeSecrets": {
+    "services": {
+      "webapi": { "instance": "exb-prd-api" },
+      "consumer": { "instance": "exb-prd-con" },
+      "jobs": { "instance": "exb-prd-job" },
+      "database-migrator": { "instance": "exb-prd-mig", "startAtBoot": false }
+    }
+  },
+  "allowedBindSources": ["/etc/example-backend/postgres/"],
+  "lockTimeoutSeconds": 1800
+}

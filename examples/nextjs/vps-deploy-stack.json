@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "stackName": "example-frontend-production",
+  "environment": "production",
+  "deploymentPath": "/srv/example-frontend/production",
+  "allowedSourceRepositories": ["chukwuemekanweke/nextjs-project-template"],
+  "allowedImageRepositories": [
+    "docker.io/example/user-portal",
+    "docker.io/example/admin-portal",
+    "docker.io/example/public-portal"
+  ]
+}

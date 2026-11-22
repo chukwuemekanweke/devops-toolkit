@@ -32,6 +32,21 @@ describe("JSON schema validation", () => {
     )).not.toThrow();
   });
 
+  it.each(["dotnet", "nextjs"])("validates the %s vps-deploy host stack registry example", (example) => {
+    expect(() => validator.validateDocument(
+      join(root, "examples", example, "vps-deploy-stack.json"),
+      join(root, "docs", "schemas", "vps-deploy-stack.schema.json"),
+    )).not.toThrow();
+  });
+
+  it("rejects host stack registries with unknown fields", () => {
+    const directory = mkdtempSync(join(tmpdir(), "devops-json-"));
+    const path = join(directory, "stack.json");
+    const document = JSON.parse(readFileSync(join(root, "examples", "nextjs", "vps-deploy-stack.json"), "utf8")) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...document, command: "id" }), "utf8");
+    expect(() => validator.validateDocument(path, join(root, "docs", "schemas", "vps-deploy-stack.schema.json"))).toThrow(/additional/iu);
+  });
+
   it.each([
     ["dotnet", 4],
     ["nextjs", 3],

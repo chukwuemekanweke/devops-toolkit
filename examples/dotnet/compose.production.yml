@@ -1,0 +1,182 @@
+# Application-owned production Compose file for the four-component backend
+# (illustrative content for deploy/compose.production.yml in the application).
+#
+# vps-deploy supplies only the immutable image digests (generated override) and
+# runtime-secret generation labels. Everything else is owned here:
+#   * images for release components are injected by digest; this file never
+#     names a tag for them, and infrastructure images are pinned by digest;
+#   * the database migrator is a one-shot service in the "migration" profile;
+#     long-running services do not depend on it because the workflow runs it
+#     to completion before rollout;
+#   * each secret-bearing service mounts only its own DEVOPS-007 generation;
+#   * host-specific non-secret values (group IDs) come from the host-owned
+#     <remote-deployment-path>/stack.env, never from the workflow.
+x-hardening: &hardening
+  read_only: true
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp
+  networks:
+    - private
+
+services:
+  webapi:
+    <<: *hardening
+    user: "${APP_UID:?APP_UID is required}"
+    group_add: ["${WEBAPI_SECRETS_GID:?WEBAPI_SECRETS_GID is required}"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+    ports:
+      # Loopback only: the host reverse proxy (an infrastructure prerequisite)
+      # terminates TLS and forwards here. Health checks use the same binding.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - type: bind
+        source: /run/runtime-secrets/example-backend/prd/webapi/current
+        target: /run/secrets/app
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  consumer:
+    <<: *hardening
+    user: "${APP_UID:?APP_UID is required}"
+    group_add: ["${CONSUMER_SECRETS_GID:?CONSUMER_SECRETS_GID is required}"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+    volumes:
+      - type: bind
+        source: /run/runtime-secrets/example-backend/prd/consumer/current
+        target: /run/secrets/app
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  jobs:
+    <<: *hardening
+    user: "${APP_UID:?APP_UID is required}"
+    group_add: ["${JOBS_SECRETS_GID:?JOBS_SECRETS_GID is required}"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+    volumes:
+      - type: bind
+        source: /run/runtime-secrets/example-backend/prd/jobs/current
+        target: /run/secrets/app
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:8080/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  database-migrator:
+    <<: *hardening
+    profiles: ["migration"]
+    user: "${APP_UID:?APP_UID is required}"
+    group_add: ["${DATABASE_MIGRATOR_SECRETS_GID:?DATABASE_MIGRATOR_SECRETS_GID is required}"]
+    environment:
+      DOTNET_ENVIRONMENT: Production
+    volumes:
+      - type: bind
+        source: /run/runtime-secrets/example-backend/prd/database-migrator/current
+        target: /run/secrets/app
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional self-hosted infrastructure. Private network only; no published
+  # ports; persistent named volumes. Replace with managed services if preferred.
+  # Infrastructure credentials are application-owned (for example *_FILE
+  # variants pointing at a registry-approved read-only bind) and never come
+  # from the deployment workflow.
+  postgres:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD_FILE: /etc/example-backend/postgres/password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: /etc/example-backend/postgres
+        target: /etc/example-backend/postgres
+        read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - private
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine@sha256:71dc98bb14d16c7240efc1d9b6356e5ac1470a51c63e8cce16f246e09748a995
+    restart: unless-stopped
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - private
+
+  redis:
+    image: redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - private
+
+networks:
+  private: {}
+
+volumes:
+  postgres-data: {}
+  rabbitmq-data: {}
+  redis-data: {}

@@ -18,7 +18,7 @@ Terraform may provision future servers and prerequisites, but is not a dependenc
 
 ## Capability model
 
-The implemented .NET, Next.js, and OCI publishing workflows plus two planned deployment workflows form a pipeline without requiring a single orchestrator:
+The implemented .NET, Next.js, OCI publishing, and VPS deployment workflows plus the planned rollback workflow form a pipeline without requiring a single orchestrator:
 
 ```text
 dotnet-ci / nextjs-ci
@@ -42,7 +42,7 @@ The caller connects jobs with `needs` and chooses which capabilities to use. CI 
 - `.github/workflows/` contains directly callable job-level workflows. Files must be at this exact depth.
 - `actions/` contains composite actions used inside jobs when several workflows need the same steps.
 - `scripts/` contains narrow helpers whose inputs can be validated and tested outside Actions.
-- `systemd/` contains reusable host-side runtime-secret unit templates and policy examples.
+- `systemd/` contains reusable host-side unit templates (runtime secrets and the deployment stack unit) and sudoers policy examples.
 - `examples/` contains caller-owned workflow examples, not toolkit implementation.
 - `docs/` is the authoritative public architecture and operating policy.
 
@@ -76,7 +76,20 @@ DEVOPS-006 designs runtime secret delivery as a separate capability with its own
 
 The Developer plan has no IP allowlisting, no human role-based access, and only 3 days of activity logs. The design documents those limits and their compensating controls rather than assuming paid features.
 
-See [architecture](doppler/architecture.md), [secret inventory](doppler/secret-inventory.md), [access policy](doppler/access-policy.md), [VPS bootstrap and delivery](doppler/vps-bootstrap.md), [rotation and revocation](doppler/rotation-and-revocation.md), and [audit and threat model](doppler/audit-and-threat-model.md). DEVOPS-007 now implements the host helper and unit templates. Doppler provisioning, template configuration changes, and `vps-deploy.yml`/`vps-rollback.yml` integration remain later tickets.
+See [architecture](doppler/architecture.md), [secret inventory](doppler/secret-inventory.md), [access policy](doppler/access-policy.md), [VPS bootstrap and delivery](doppler/vps-bootstrap.md), [rotation and revocation](doppler/rotation-and-revocation.md), and [audit and threat model](doppler/audit-and-threat-model.md). DEVOPS-007 implements the host helper and unit templates, and DEVOPS-009 integrates them into `vps-deploy.yml`. Doppler provisioning, template configuration changes, and `vps-rollback.yml` remain later tickets.
+
+## Deployment host boundary
+
+DEVOPS-009 adds a constrained host-side execution interface rather than giving the deploy identity a shell or Docker group membership ([operations guide](vps-deployment.md)):
+
+| Layer | Owner | Responsibility |
+| --- | --- | --- |
+| `vps-deploy.yml` and `scripts/vps-deploy.mjs` | Toolkit | Validate inputs and the release manifest, transfer one JSON request over SSH with a pinned host key, publish outputs and the sanitized audit artifact |
+| Forced command and sudoers rule | Host administrator (toolkit templates) | Bind each deploy key to one stack and allow only `vps-deploy-host.mjs deploy --stack <stack>` as root |
+| Host stack registry `/etc/vps-deploy/stacks/<stack>.json` | Host administrator | Authorize environment, deployment root, source repositories, image namespaces, runtime-secret instances, ports, binds, and networks |
+| `scripts/vps-deploy-host.mjs` engine | Toolkit | Lock, stage, apply the Compose policy, pull by digest, orchestrate DEVOPS-007 secrets, migrate, roll out, verify health, commit or restore |
+| Compose files, health semantics, migration compatibility | Application | Topology, wiring, health checks, expand/migrate/contract schema changes |
+| `vps-deploy-stack@.service` | Toolkit (enabled per stack by the host administrator) | Start the active release at boot only after runtime-secret initialization |
 
 ## Ownership and change management
 

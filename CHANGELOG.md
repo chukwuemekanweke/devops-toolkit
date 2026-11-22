@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- DEVOPS-009 reusable `vps-deploy.yml`. It deploys a `docker-publish.yml` manifest to an independent, application-owned Docker Compose stack on a Linux VPS over SSH, with a pinned host key and a deploy key bound to one stack by a forced command. On the host it uses a sudo-constrained root helper and a root-owned stack registry (`vps-deploy-stack.schema.json` v1) that authorizes environment, path, source repository, image namespaces, runtime-secret instances, ports, binds, and networks. The helper:
+  - takes a stack-scoped lock and stages releases with atomic state transitions;
+  - generates a digest image override;
+  - applies a Compose policy that rejects privileged mode, host namespaces, Docker socket and foreign secret mounts, unapproved binds/ports/networks, mutable images, and root release containers;
+  - pulls by digest with a temporary pull-only credential;
+  - renders DEVOPS-007 runtime secrets before an optional time-bounded one-shot migration (exit 0 required);
+  - uses generation-label-driven container recreation;
+  - verifies service state and host-side HTTP health;
+  - writes write-once manifests, append-only sanitized history, and a 90-day audit artifact;
+  - automatically restores the previous images and secret pointers after a failed rollout (the job still fails).
+- `vps-deploy-stack@.service` and a generated boot drop-in that start the active release only after DEVOPS-007 initialization (fail closed when Doppler is unavailable), plus a forced-command wrapper, installer, sudoers template, and an operations guide (`docs/vps-deployment.md`).
+- Production Compose and host stack registry examples for the four-component backend (one-shot migration profile) and three-portal frontend (no migration), plus deploy jobs in both consumer callers.
+- VPS deployment unit tests and two privileged Linux harnesses: Docker-in-Docker with real Compose, sshd, and sudo; and a booted systemd host. They run in a new `vps-deploy-linux` validation job.
 - DEVOPS-007 host-side Doppler delivery: pinned CLI adapter, strict versioned instance and key-manifest contracts, key-per-file tmpfs generations, atomic render/activate/discard/restore/prune lifecycle, stable automation errors, hardened systemd templates, fail-closed boot ordering, service-isolated Compose example, portable negative tests, and an explicit privileged Linux/Docker integration harness.
 - Doppler runtime-secrets design (DEVOPS-006, documentation only) under `docs/doppler/`, targeting the Developer (free) plan with capabilities and limits verified on 2026-11-21. It covers: one project per application with `dev`/`stg`/`prd` environments, one branch config per service, and empty, locked root configs. Each service config on each host gets its own read-only, expiring service token. Host-side systemd rendering writes atomic key-per-file generations, enforces an application-owned key list and a token scope check, writes no CLI fallback files, and is mounted read-only by Compose. Also included: a verified backend and frontend secret inventory, isolation analysis and alternatives, acceptance tests, bootstrap, failure and outage behavior, rotation, emergency revocation, audit, access-review, and threat-model documentation, plus the Free-plan limitations and their compensating controls. No Doppler integration is operational yet.
 - Reusable OCI image publishing with strict caller configuration validation, dynamic Buildx matrices, Docker Hub digest identity, component-scoped cache and package secrets, Trivy policy enforcement, registry-native SBOM/provenance attestations, artifact-based aggregation, and atomic release-manifest outputs.
@@ -27,8 +40,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Security, versioning, ownership, migration, and release policies.
 - Illustrative thin callers for the four-image .NET template and multi-application Next.js template.
 
+### Fixed
+
+- DEVOPS-007 units failed on every real systemd host. This was found by the new systemd harness:
+  - `runtime-secrets-{render,activate,discard,restore}@` ran Node.js under `MemoryDenyWriteExecute=yes`, which aborts V8's JIT. They now run `node --jitless` and keep the hardening.
+  - `runtime-secrets-render@`'s `SystemCallFilter=~@privileged` also denied `@chown`, which killed the helper with SIGSYS while it set generation file ownership. `@chown` is now explicitly re-allowed.
+
 ### Changed
 
+- `workflow-contracts.md` documents the implemented `vps-deploy.yml` validation, execution, restoration, and audit behavior without changing its inputs, outputs, secrets, or permissions. The same-run `manifest-artifact` download needs only `contents: read`.
 - Reconciled the DEVOPS-006 design with the implemented contract: `/run/runtime-secrets` tmpfs is now the default, key-per-file is definitive, runtime refresh retention is distinguished from reboot loss, activation is separated from health validation, and container recreation is required after pointer activation.
 - Replaced the planned Infisical runtime-secrets provider with Doppler. Earlier documentation named Infisical only as a later design; no Infisical integration was ever implemented. Linked the Doppler design from the README, architecture, security, deployment-model, workflow-contract, and migration documentation. Recorded the rules that the planned `vps-deploy.yml` and `vps-rollback.yml` implementations must follow: deployment-time secret rendering order, ephemeral migrator secrets, and secret-generation rollback policy. Public workflow contracts and manifest schemas are unchanged.
 - Reconciled the unreleased .NET CI contract around template-owned Testcontainers by removing Compose inputs and the integration environment secret; the consumer example now demonstrates verification only and avoids an uncreated `v1` reference.

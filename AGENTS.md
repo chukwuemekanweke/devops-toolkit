@@ -35,6 +35,14 @@ Do not create placeholder workflows that report success. A workflow file is adde
 - Activation is not application-health validation. Existing bind mounts change only after container recreation; deployment orchestration remains outside the host helper.
 - Linux-only security behavior must have an explicit runnable harness and must never be reported as passing when skipped.
 
+## VPS deployment contracts
+
+- Treat the host stack registry schema (`vps-deploy-stack.schema.json` v1), the forced-command/sudo interface (`vps-deploy-ssh` → `vps-deploy-host.mjs deploy --stack <stack>`), the remote state layout, and `vps-deploy-stack@.service` as public contracts alongside `vps-deploy.yml`.
+- Never accept remote shell text from workflow inputs, add the deploy identity to the `docker` group, relax strict host-key checking, or let a request widen what the host registry authorizes.
+- Keep the Compose policy fail-closed: new Compose features that can reach host resources are rejected until reviewed and explicitly allowed.
+- Failures before rollout must not change running containers, `current` generations, or `active.json`; the job fails whenever the new release did not pass health, including after a successful restoration.
+- Deployment and systemd behavior changes must pass `npm run test:vps-deploy:linux` and `npm run test:vps-deploy:systemd`.
+
 ## Local validation
 
 Install the locked Node.js 22 dependencies, then run:

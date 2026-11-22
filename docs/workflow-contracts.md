@@ -1,6 +1,6 @@
 # Reusable workflow contracts
 
-This document is the authoritative public interface for reusable workflows. `.NET CI`, Next.js CI, and OCI image publishing are implemented; deployment and rollback remain planned. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md). Repository validation compares every implemented `workflow_call` interface with the matching tables in this document, so the Markdown remains the single contract authority rather than being duplicated in another manifest.
+This document is the authoritative public interface for reusable workflows. `.NET CI`, Next.js CI, OCI image publishing, and VPS deployment are implemented; rollback remains planned. Later implementation tickets must either conform to these contracts or apply the compatibility process in [versioning.md](versioning.md). Repository validation compares every implemented `workflow_call` interface with the matching tables in this document, so the Markdown remains the single contract authority rather than being duplicated in another manifest.
 
 The interfaces follow GitHub's current [reusable workflow](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows), [workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), and [secure use](https://docs.github.com/en/actions/reference/security/secure-use) documentation.
 
@@ -262,7 +262,7 @@ The example assumes the application repository contains the four-component file 
 
 ### Purpose and callers
 
-Deploys an already-built immutable manifest to a provisioned Linux VPS using Docker Compose. It transfers only approved configuration, records previous state, optionally runs a Compose migration service, starts the release, and verifies Compose health. It does not provision the host or build images.
+Deploys an already-built immutable manifest to a provisioned Linux VPS using Docker Compose. It transfers only approved configuration, records previous state, prepares DEVOPS-007 runtime secrets, optionally runs a Compose migration service, starts the release, verifies health, and restores the previous release after a failed rollout. It does not provision the host or build images. Host preparation, the constrained host interface, Compose policy, and recovery are documented in [vps-deployment.md](vps-deployment.md).
 
 ### Inputs
 
@@ -284,7 +284,20 @@ Deploys an already-built immutable manifest to a provisioned Linux VPS using Doc
 | `health-timeout-seconds` | number | no | `300` | Post-start health deadline |
 | `rollback-on-health-failure` | boolean | no | `true` | Attempt to restore the recorded previous manifest after a failed health check; the deployment workflow still fails |
 
-Exactly one of `manifest-json` or `manifest-artifact` is logically required and validated before mutation. The reusable workflow's deployment job sets `environment: ${{ inputs.environment }}` and concurrency group `deploy-<caller repository>-<environment>-<stack-name>`, with no cancellation of an in-progress deployment. The caller configures its GitHub Environment approvals and branch/tag restrictions. A caller job that invokes a reusable workflow cannot attach arbitrary steps around it.
+Exactly one of `manifest-json` or `manifest-artifact` is logically required and validated before mutation. The reusable workflow's deployment job sets `environment: ${{ inputs.environment }}` and concurrency group `deploy-<caller repository>-<environment>-<stack-name>`, with no cancellation of an in-progress deployment. (GitHub keeps at most one *pending* run per concurrency group; a newer pending run replaces an older pending one, but an in-progress deployment is never cancelled.) The caller configures its GitHub Environment approvals and branch/tag restrictions. A caller job that invokes a reusable workflow cannot attach arbitrary steps around it.
+
+Input validation, applied before any SSH connection and again on the host:
+
+- `environment`: 1–64 characters `[A-Za-z0-9._-]`; must equal the host stack registry `environment`.
+- `deployment-id`: the docker-publish identifier format; must equal the manifest `deployment_id`. A deployment id may be redeployed only with a byte-identical canonical manifest.
+- Manifest: schema `1.x` (unknown fields rejected for `1.0`), full source commit, RFC 3339 `created_at`, unique components, untagged `docker.io` repositories, and `sha256` digests. `source_repository` must equal the calling repository and be authorized by the host registry, and every image repository must be in the registry's allowed namespaces. `manifest-artifact` names a same-run artifact containing `deployment-manifest.json`.
+- `compose-files`: 1–10 unique repository-relative `.yml`/`.yaml` paths without `.`/`..` segments, absolute paths, backslashes, or symbolic links, each at most 256 KiB, read from the caller checkout at the triggering commit.
+- `stack-name`: a lowercase Compose project name (`[a-z0-9][a-z0-9_-]{0,62}`) that must equal the stack bound to the SSH key on the host.
+- `component-service-map`: a strict JSON object whose keys are manifest components and whose values are valid, unique Compose service names. Every component must resolve to a service in the merged Compose configuration.
+- `remote-deployment-path`: an absolute normalized path with at least two segments; it must equal the host registry `deploymentPath`.
+- `migration-service`: empty, or the Compose service of a release component. `migration-timeout-seconds` 1–7200; `health-timeout-seconds` 10–3600; `ssh-port` 1–65535.
+- `health-services`: valid unique names of long-running services, excluding the migration service.
+- `health-checks`: at most 20 objects with unique `name` (`[A-Za-z0-9 ._-]`, max 64), an `http`/`https` `url` without credentials whose host the host registry allows (loopback by default), and optional `expectedStatus` given as one code or an array of codes from 100 to 599 (default `200`).
 
 ### Secrets
 
@@ -297,11 +310,13 @@ Exactly one of `manifest-json` or `manifest-artifact` is logically required and 
 | `registry-username` | yes | Read-only registry identity used on the VPS |
 | `registry-token` | yes | Read-only token for image pulls |
 
-Production application secrets are not a deployment-workflow secret input. Application-owned Compose definitions consume the later Doppler-delivered, service-scoped read-only files described by DEVOPS-006/007 ([design](doppler/architecture.md)). GitHub Actions needs deployment and registry credentials, not long-lived database, messaging, signing, or application credentials.
+Production application secrets are not a deployment-workflow secret input. Application-owned Compose definitions consume the Doppler-delivered, service-scoped read-only files of DEVOPS-007 ([design](doppler/architecture.md)), which the host prepares without GitHub Actions ever holding a Doppler token or secret value. GitHub Actions needs deployment and registry credentials, not long-lived database, messaging, signing, or application credentials.
+
+SSH uses `StrictHostKeyChecking=yes` with only the supplied `ssh-known-hosts` (wildcard or negated host patterns are rejected and an entry for the configured host and port is required), batch-mode public-key authentication, no agent or port forwarding, and the fixed remote operation `deploy`. On the host the key is bound to one stack by a forced command. The registry credentials travel only inside the SSH stdin request and never appear in process arguments, logs, outputs, or artifacts.
 
 ### Permissions
 
-Minimum: `contents: read`. Add `actions: read` when `manifest-artifact` is used. The workflow needs no repository, package, or deployment write permission for Docker Hub.
+Minimum: `contents: read`. Add `actions: read` when `manifest-artifact` is used. The workflow needs no repository, package, or deployment write permission for Docker Hub. The current implementation downloads `manifest-artifact` from the same workflow run, which needs only `contents: read`; `actions: read` remains reserved for a future cross-run download.
 
 ### Outputs
 
@@ -316,7 +331,25 @@ Minimum: `contents: read`. Add `actions: read` when `manifest-artifact` is used.
 
 The implementation validates manifest, paths, names, and host key before connection. It acquires remote stack locking, snapshots the active manifest, creates a staged release directory, transfers approved Compose configuration, logs into the registry without exposing the token, pulls every digest, and materializes a generated image override. When `migration-service` is set, it runs that release-scoped one-shot service and requires an explicit zero exit result before starting dependent services; a perpetual container health check is not a migration-success signal. An empty migration service disables this stage for applications such as the current Next.js portals. The workflow then starts Compose and waits for both service health and configured endpoint checks before atomically marking the new manifest active and appending sanitized history.
 
+In order, on the host and under an exclusive lock scoped to the stack (other stacks remain deployable):
+
+1. **Validate** the request against the root-owned host stack registry for the key-bound stack, pre-scan the Compose files (rejecting `include`, `env_file`, `extends.file`, and file-backed `configs`/`secrets`), and resolve the stack's DEVOPS-007 runtime-secret instances.
+2. **Stage** a release-specific directory with the Compose files, the manifest, a generated image override (`image@sha256:…` for each component service), and a sanitized request record. Run `docker compose config` with every profile enabled and apply the host Compose policy (digest-pinned images, no privileged mode, host namespaces, Docker socket, foreign secret mounts, unapproved binds/ports/networks, or root component users).
+3. **Pull** every image by digest with a temporary pull-only credential.
+4. **Prepare runtime secrets**: render every registered secret-bearing service to a `pending` generation through the DEVOPS-007 units. Any render failure discards the generations rendered so far and stops.
+5. **Migrate** (optional): activate the migrator's generation, run the service with `docker compose run`, enforce the timeout, and require exit `0`. A failed or timed-out container is retained for diagnosis; long-running services are not touched.
+6. **Roll out**: activate the remaining generations, record generation ids as container labels so Compose recreates exactly the containers whose image or generation changed, and run `docker compose up --no-build --pull never` for the long-running (default-profile, non-migration) services.
+7. **Verify health** using the service-state contract in [vps-deployment.md](vps-deployment.md#health-verification) and the HTTP checks, with bounded retries until `health-timeout-seconds`.
+8. **Commit**: atomically write the active release record, preserve the previous one and its manifest, append a sanitized history line, and prune runtime-secret generations that no pointer or container references.
+
 Failures before activation leave the prior deployment active. Health failure triggers best-effort restore when enabled, but the job remains failed so operators see the incident. A migration failure stops deployment and does not auto-reverse the database. Remote output and artifacts exclude environment files, credentials, and raw secret-bearing commands.
+
+Failure handling in detail:
+
+- A failure in steps 1–5 changes no running container, no `current` runtime-secret generation, and no active release record; the status is `failed`.
+- A failure in steps 6–7 (activation, `compose up`, or health) is a rollout failure. When `rollback-on-health-failure` is true and a previous release is recorded, the host restores the previous runtime-secret pointers (`restore`), recreates the previous release's containers with its recorded image digests and Compose files (`--remove-orphans`), and verifies the previous release with its recorded health configuration. A healthy restoration yields `restored-after-failure`; a failed one yields `failed` with `restoration.outcome: failed` and manual-recovery guidance. Either way the job fails.
+- When `rollback-on-health-failure` is false, or there is no previous release (initial deployment), the failed release is left in place for diagnosis and no rollback target is invented.
+- The job fails unless `deployment-status` is `succeeded`. The `deployment-record-artifact` (`vps-deployment-record-<stack>-<run id>-<attempt>`, retained 90 days) is uploaded even when validation or the SSH connection fails.
 
 ### Example call
 
@@ -334,6 +367,8 @@ deploy:
     stack-name: example-production
     component-service-map: '{"migrator":"database-migrator"}'
     remote-deployment-path: /srv/example/production
+    migration-service: database-migrator
+    health-checks: '[{"name":"api","url":"http://127.0.0.1:8080/health"}]'
   secrets:
     ssh-host: ${{ secrets.VPS_HOST }}
     ssh-user: ${{ secrets.VPS_USER }}
@@ -343,7 +378,7 @@ deploy:
     registry-token: ${{ secrets.DOCKERHUB_READ_TOKEN }}
 ```
 
-Changing remote state layout or activation/health semantics incompatibly is breaking. Adding an optional verification mode is minor-version compatible.
+Changing remote state layout or activation/health semantics incompatibly is breaking. Adding an optional verification mode is minor-version compatible. The host stack registry schema ([vps-deploy-stack.schema.json](schemas/vps-deploy-stack.schema.json), version `1`), the forced-command/sudo interface, and the remote state layout are versioned with this workflow.
 
 ## `vps-rollback.yml`
 
