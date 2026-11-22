@@ -3,7 +3,9 @@
 //   inputs   validate workflow inputs and choose the manifest source
 //   prepare  validate the manifest and Compose files and write a non-secret bundle
 //   remote   send the bundle plus pull-only registry credentials over SSH stdin
-//   record   write the sanitized audit record, job summary and workflow outputs
+//   record   write the sanitized audit record and job summary (deploy job)
+//   record-artifact  name the audit record artifact (secret-free report job)
+//   report   export the workflow outputs from the downloaded record (secret-free report job)
 // Workflow inputs arrive as environment variables and are never evaluated as shell.
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -20,6 +22,9 @@ const ipv4Pattern = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1
 const ipv6Pattern = /^[0-9A-Fa-f:]{2,39}$/u;
 const sshUserPattern = /^[a-z_][a-z0-9_-]{0,31}$/u;
 const statuses = new Set(["succeeded", "failed", "restored-after-failure"]);
+const recordStackPattern = /^[a-z0-9][a-z0-9_-]{0,62}$/u;
+const recordFileName = "deployment-record.json";
+const maxRecordBytes = 1024 * 1024;
 
 function directory(env) {
   const value = env.VPS_DEPLOY_DIRECTORY ?? (env.RUNNER_TEMP ? join(env.RUNNER_TEMP, "vps-deploy") : "");
@@ -301,18 +306,27 @@ export function buildRecord(env, { bundle, result, failure }) {
   };
 }
 
+/**
+ * Audit record artifact name. The deploy job (upload) and the secret-free report
+ * job (download) both derive it from the same stack-name input and run identity,
+ * so the report job never needs an output from the secret-bearing job.
+ */
+export function recordArtifactName({ stackName, runId, runAttempt }) {
+  const stack = typeof stackName === "string" && recordStackPattern.test(stackName) ? stackName : "invalid-stack";
+  const number = (value, fallback) => (typeof value === "string" && /^[0-9]{1,20}$/u.test(value) ? value : fallback);
+  return `vps-deployment-record-${stack}-${number(runId, "0")}-${number(runAttempt, "1")}`;
+}
+
 function recordCommand(env) {
   const folder = directory(env);
   const read = (name) => { try { return JSON.parse(readFileSync(join(folder, name), "utf8")); } catch { return null; } };
   const bundle = read("bundle.json");
   const record = buildRecord(env, { bundle, result: read("result.json"), failure: read("failure.json") });
-  writeFileSync(join(folder, "deployment-record.json"), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-  const stack = /^[a-z0-9][a-z0-9_-]{0,62}$/u.test(record.stackName) ? record.stackName : "invalid-stack";
+  writeFileSync(join(folder, recordFileName), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  // Step outputs only: they drive the upload and the final status gate inside the
+  // deploy job. Workflow outputs come from the secret-free report job.
   output(env, "deployment-status", record.status);
-  output(env, "deployed-id", record.deployedId);
-  output(env, "previous-deployment-id", record.previousDeploymentId);
-  output(env, "record-artifact", `vps-deployment-record-${stack}-${env.RUN_ID ?? "0"}-${env.RUN_ATTEMPT ?? "1"}`);
-  for (const [name, value] of Object.entries(notificationOutputs(record))) output(env, name, value);
+  output(env, "record-artifact", recordArtifactName({ stackName: env.STACK_NAME, runId: env.RUN_ID, runAttempt: env.RUN_ATTEMPT }));
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = [
       `### VPS deployment: ${record.status}`, "",
@@ -346,6 +360,59 @@ export function notificationOutputs(record) {
   };
 }
 
+/**
+ * Reads the record the deploy job uploaded. Returns `present: false` when no
+ * artifact was downloaded (the deploy job ended before uploading it) and
+ * `record: null` when the file is not a well-formed version-1 record.
+ */
+export function readDeploymentRecord(folder) {
+  const path = join(folder, recordFileName);
+  let info;
+  try { info = lstatSync(path); } catch { return { present: false, record: null }; }
+  if (!info.isFile() || info.size > maxRecordBytes) return { present: true, record: null };
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    const valid = value && typeof value === "object" && !Array.isArray(value) && value.schemaVersion === 1 && statuses.has(value.status);
+    return { present: true, record: valid ? value : null };
+  } catch {
+    return { present: true, record: null };
+  }
+}
+
+/**
+ * The nine workflow outputs. Without a usable record nothing is known about the
+ * host, so the outcome is `unknown` and the status is never `succeeded`.
+ */
+export function reportOutputs({ present, record }, artifactName) {
+  const artifact = present ? artifactName : "";
+  if (!record) {
+    return {
+      "deployment-status": "failed", "deployed-id": "", "previous-deployment-id": "", "deployment-record-artifact": artifact,
+      "deployment-outcome": "unknown", "failed-phase": "unknown", "failure-category": "unknown", "migration-status": "unknown", "restoration-outcome": "unknown",
+    };
+  }
+  const id = (value) => (typeof value === "string" && /^[^\u0000-\u001f\u007f]{0,128}$/u.test(value) ? value : "");
+  return {
+    "deployment-status": record.status,
+    "deployed-id": record.status === "succeeded" ? id(record.deployedId) : "",
+    "previous-deployment-id": id(record.previousDeploymentId),
+    "deployment-record-artifact": artifact,
+    ...notificationOutputs(record),
+  };
+}
+
+function reportCommand(env) {
+  const folder = env.VPS_DEPLOY_RECORD_DIRECTORY;
+  if (!folder || !isAbsolute(folder)) throw new DeployError("internal", "VPS_DEPLOY_RECORD_DIRECTORY must be an absolute path");
+  const name = recordArtifactName({ stackName: env.STACK_NAME, runId: env.RUN_ID, runAttempt: env.RUN_ATTEMPT });
+  const loaded = readDeploymentRecord(folder);
+  if (!loaded.present) console.log(`::warning::Deployment record '${name}' was not uploaded; the deploy job ended before recording. Reporting outcome 'unknown'; consult the host history before retrying.`);
+  else if (!loaded.record) console.log(`::warning::Deployment record '${name}' is not a valid version-1 record. Reporting outcome 'unknown'.`);
+  const outputs = reportOutputs(loaded, name);
+  for (const [key, value] of Object.entries(outputs)) output(env, key, value);
+  console.log(`vps-deploy report: status=${outputs["deployment-status"]} outcome=${outputs["deployment-outcome"]}`);
+}
+
 async function run(command, env) {
   if (command === "inputs") {
     const inputs = validateInputs(env);
@@ -360,7 +427,12 @@ async function run(command, env) {
   }
   if (command === "remote") return await remoteCommand(env);
   if (command === "record") return recordCommand(env);
-  throw new DeployError("usage", "usage: vps-deploy.mjs <inputs|prepare|remote|record>");
+  if (command === "record-artifact") {
+    output(env, "record-artifact", recordArtifactName({ stackName: env.STACK_NAME, runId: env.RUN_ID, runAttempt: env.RUN_ATTEMPT }));
+    return;
+  }
+  if (command === "report") return reportCommand(env);
+  throw new DeployError("usage", "usage: vps-deploy.mjs <inputs|prepare|remote|record|record-artifact|report>");
 }
 
 const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

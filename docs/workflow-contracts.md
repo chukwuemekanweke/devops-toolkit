@@ -340,7 +340,16 @@ Minimum: `contents: read`. Add `actions: read` when `manifest-artifact` is used.
 | `migration-status` | `not-configured`, `not-run`, `not-started`, `failed`, `timed-out`, `succeeded`, or `unknown` |
 | `restoration-outcome` | `not-required`, `restored`, `failed`, `disabled`, `no-previous-release`, or `unknown` |
 
-The last five outputs (added in DEVOPS-010) are single-line tokens intended for caller-owned failure notification (see [Failure notification](#failure-notification)). They are set by the always-run record step, so they are available to a dependent caller job even when the deployment job fails. They are empty only when the job ended before that step ran (for example a lost runner).
+The last five outputs (added in DEVOPS-010) are single-line tokens intended for caller-owned failure notification (see [Failure notification](#failure-notification)).
+
+All nine outputs come from an internal `report` job, not from the job that deploys. The workflow splits by secret boundary (see [security.md](security.md#secret-free-output-jobs)):
+
+- **`deploy`** uses the SSH and registry secrets. It writes and uploads the sanitized audit record and exports no job outputs. GitHub drops any job output that contains a secret the job references, so outputs exported from this job could be emptied by an overlap, for example an `ssh-user` of `deploy` inside the record artifact name.
+- **`report`** references no secrets. It runs after `deploy` whatever that job's result (`if: always()`), downloads the record, and exports the outputs. It finds the record by name from the public `stack-name` and the run identity, never from an output of `deploy`. It takes no environment, so it adds no approval gate.
+
+If no record was uploaded, for example because the runner was lost or the job was cancelled before the record step, `report` reports `deployment-status: failed` and `unknown` for `deployment-outcome`, `failed-phase`, `failure-category`, `migration-status`, and `restoration-outcome`. `deployment-record-artifact`, `deployed-id`, and `previous-deployment-id` are then empty. A record that is not a valid version-1 record is reported the same way, but `deployment-record-artifact` still names it. `report` never reports success without a record that says so. If `report` itself fails, the outputs are empty and the workflow call fails. The deployment result is unchanged, and the uploaded record and host history stay authoritative.
+
+Through toolkit revision `a7a4f80`, the outputs came from `deploy` and could be suppressed when a credential overlapped them, and they were empty when the job ended before recording.
 
 ### Execution and failure behavior
 

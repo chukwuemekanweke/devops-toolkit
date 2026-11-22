@@ -16,7 +16,8 @@ send one JSON request over SSH stdin      ->   lock -> stage release -> compose 
                                                run one-shot migration (optional; exit 0 required)
                                                activate generations -> compose up (recreate changed)
                                                verify service state + HTTP checks
-record outputs + sanitized audit artifact <-   commit active release + append history | restore on failure
+upload sanitized audit artifact          <-   commit active release + append history | restore on failure
+secret-free report job: outputs from artifact
 ```
 
 Failures before rollout (validation, staging, pull, Compose policy, secret rendering, migration) leave running containers, `current` secret generations of long-running services, and the active release record untouched (a migration that ran may still have changed the database). Failures after rollout (activation, `compose up`, health) trigger restoration when `rollback-on-health-failure` is true and a previous release exists. The job always fails unless the new release passed health verification.

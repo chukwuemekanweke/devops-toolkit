@@ -95,31 +95,31 @@ on:
     outputs:
       deployment-status:
         description: succeeded, failed, or restored-after-failure
-        value: ${{ jobs.deploy.outputs.deployment-status }}
+        value: ${{ jobs.report.outputs.deployment-status }}
       deployed-id:
         description: Deployment ID that passed health, empty on failure
-        value: ${{ jobs.deploy.outputs.deployed-id }}
+        value: ${{ jobs.report.outputs.deployed-id }}
       previous-deployment-id:
         description: Previously active recorded deployment, empty on first deployment
-        value: ${{ jobs.deploy.outputs.previous-deployment-id }}
+        value: ${{ jobs.report.outputs.previous-deployment-id }}
       deployment-record-artifact:
         description: Sanitized audit record artifact name
-        value: ${{ jobs.deploy.outputs.deployment-record-artifact }}
+        value: ${{ jobs.report.outputs.deployment-record-artifact }}
       deployment-outcome:
         description: succeeded, failed-before-rollout, restored-after-failure, restoration-failed, failed-restoration-disabled, failed-no-previous-release, or unknown
-        value: ${{ jobs.deploy.outputs.deployment-outcome }}
+        value: ${{ jobs.report.outputs.deployment-outcome }}
       failed-phase:
         description: Deployment phase that failed, empty on success
-        value: ${{ jobs.deploy.outputs.failed-phase }}
+        value: ${{ jobs.report.outputs.failed-phase }}
       failure-category:
         description: Sanitized failure category, empty on success
-        value: ${{ jobs.deploy.outputs.failure-category }}
+        value: ${{ jobs.report.outputs.failure-category }}
       migration-status:
         description: not-configured, not-run, not-started, failed, timed-out, succeeded, or unknown
-        value: ${{ jobs.deploy.outputs.migration-status }}
+        value: ${{ jobs.report.outputs.migration-status }}
       restoration-outcome:
         description: not-required, restored, failed, disabled, no-previous-release, or unknown
-        value: ${{ jobs.deploy.outputs.restoration-outcome }}
+        value: ${{ jobs.report.outputs.restoration-outcome }}
 
 permissions:
   contents: read
@@ -135,16 +135,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-    outputs:
-      deployment-status: ${{ steps.record.outputs.deployment-status }}
-      deployed-id: ${{ steps.record.outputs.deployed-id }}
-      previous-deployment-id: ${{ steps.record.outputs.previous-deployment-id }}
-      deployment-record-artifact: ${{ steps.record.outputs.record-artifact }}
-      deployment-outcome: ${{ steps.record.outputs.deployment-outcome }}
-      failed-phase: ${{ steps.record.outputs.failed-phase }}
-      failure-category: ${{ steps.record.outputs.failure-category }}
-      migration-status: ${{ steps.record.outputs.migration-status }}
-      restoration-outcome: ${{ steps.record.outputs.restoration-outcome }}
+    # No job outputs: this job references the SSH and registry secrets, and the
+    # runner drops any job output containing a referenced secret value. The
+    # secret-free report job exports the workflow outputs from the uploaded record.
     env:
       ENVIRONMENT: ${{ inputs.environment }}
       DEPLOYMENT_ID: ${{ inputs.deployment-id }}
@@ -275,3 +268,67 @@ jobs:
             echo "Deployment status is '${STATUS:-unknown}'; the job fails even when automatic restoration succeeded." >&2
             exit 1
           fi
+
+  report:
+    name: Report ${{ inputs.stack-name }} deployment outcome
+    needs: deploy
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # Must never reference secrets so that GitHub cannot suppress these outputs.
+    outputs:
+      deployment-status: ${{ steps.report.outputs.deployment-status }}
+      deployed-id: ${{ steps.report.outputs.deployed-id }}
+      previous-deployment-id: ${{ steps.report.outputs.previous-deployment-id }}
+      deployment-record-artifact: ${{ steps.report.outputs.deployment-record-artifact }}
+      deployment-outcome: ${{ steps.report.outputs.deployment-outcome }}
+      failed-phase: ${{ steps.report.outputs.failed-phase }}
+      failure-category: ${{ steps.report.outputs.failure-category }}
+      migration-status: ${{ steps.report.outputs.migration-status }}
+      restoration-outcome: ${{ steps.report.outputs.restoration-outcome }}
+    env:
+      STACK_NAME: ${{ inputs.stack-name }}
+      RUN_ID: ${{ github.run_id }}
+      RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Resolve called workflow source
+        id: toolkit
+        shell: bash
+        env:
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        run: |
+          repository=$(jq -r '.workflow_repository // empty' <<< "$JOB_CONTEXT")
+          sha=$(jq -r '.workflow_sha // empty' <<< "$JOB_CONTEXT")
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out matching toolkit implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.toolkit.outputs.repository }}
+          ref: ${{ steps.toolkit.outputs.sha }}
+          path: .devops-toolkit-source
+          persist-credentials: false
+
+      - name: Name the deployment record artifact
+        id: artifact
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs record-artifact
+
+      # A pattern (not a name) matches zero artifacts without failing, so a deploy
+      # job that ended before uploading its record reports `unknown` below.
+      - name: Download deployment record
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ steps.artifact.outputs.record-artifact }}
+          path: ${{ runner.temp }}/vps-deploy-report
+          merge-multiple: true
+
+      - name: Export deployment outputs
+        id: report
+        env:
+          VPS_DEPLOY_RECORD_DIRECTORY: ${{ runner.temp }}/vps-deploy-report
+        run: node .devops-toolkit-source/scripts/vps-deploy.mjs report

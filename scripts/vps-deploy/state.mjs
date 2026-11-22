@@ -11,7 +11,7 @@
 //   runtime/generations.override.json derived runtime-secret generation labels
 //   stack.env                         optional operator-owned, non-secret interpolation values
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fail, parseJsonStrict } from "./contract.mjs";
@@ -159,7 +159,17 @@ export class StackState {
   async writeAtomic(path, content, mode = 0o640) {
     const temporary = join(dirname(path), `.tmp-${this.pid}-${this.random()}`);
     await this.writeExclusive(temporary, content, mode);
-    try { await rename(temporary, path); } catch (error) { await rm(temporary, { force: true }); throw error; }
+    try {
+      await rename(temporary, path);
+    } catch (error) {
+      // POSIX rename replaces a read-only (0444) target; Windows refuses with EPERM while the
+      // target carries the read-only attribute. Clear it on Windows only, then retry once.
+      let retried = false;
+      if (!posix && error?.code === "EPERM") {
+        try { await chmod(path, 0o644); await rename(temporary, path); retried = true; } catch { /* report the original error */ }
+      }
+      if (!retried) { await rm(temporary, { force: true }); throw error; }
+    }
     await syncDirectory(dirname(path));
   }
 

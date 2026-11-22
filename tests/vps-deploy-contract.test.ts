@@ -7,7 +7,10 @@ import {
   classifyDeploymentOutcome, classifyMigrationStatus, parseComponentServiceMap, parseComposeFileList, parseHealthChecks, resolveComponentServices, selectManifestSource,
   validateDeploymentRequest, validateReleaseManifest, validateRemoteDeploymentPath, validateStackName,
 } from "../scripts/vps-deploy/contract.mjs";
-import { buildRecord, notificationOutputs, parseRemoteResult, prepareBundle, readWorkspaceFile, relayStderrLine, sshArguments, validateInputs, validateSshTarget } from "../scripts/vps-deploy.mjs";
+import {
+  buildRecord, notificationOutputs, parseRemoteResult, prepareBundle, readDeploymentRecord, readWorkspaceFile, recordArtifactName, relayStderrLine, reportOutputs,
+  sshArguments, validateInputs, validateSshTarget,
+} from "../scripts/vps-deploy.mjs";
 
 const root = join(import.meta.dirname, "..");
 import { commit, digest, manifestObject, repository, requestObject, workflow } from "./helpers/vps-deploy-fixtures.js";
@@ -260,5 +263,97 @@ describe("vps-deploy runner helper", () => {
     expect(notificationOutputs(record)["deployment-outcome"]).not.toBe("succeeded");
     expect(JSON.stringify(record)).not.toMatch(/dckr_pat_leak|hunter2-leak/u);
     expect(notificationOutputs({ ...record, outcome: "evil\nname=value", phase: "x;y" })).toMatchObject({ "deployment-outcome": "unknown", "failed-phase": "unknown" });
+  });
+});
+
+describe("secret-free deployment report", () => {
+  const bundle = { request: { stackName: "example-backend-production", environment: "production", deploymentId: commit, migrationService: "database-migrator" }, manifestSha256: "f".repeat(64) };
+  const identity = { stackName: "example-backend-production", runId: "45027735800", runAttempt: "2" };
+  const writeRecord = (record: unknown) => {
+    const folder = mkdtempSync(join(tmpdir(), "vps-report-"));
+    writeFileSync(join(folder, "deployment-record.json"), typeof record === "string" ? record : JSON.stringify(record));
+    return folder;
+  };
+
+  it("derives one artifact name for upload and download from public identity only", () => {
+    expect(recordArtifactName(identity)).toBe("vps-deployment-record-example-backend-production-45027735800-2");
+    expect(recordArtifactName({ stackName: "Bad Stack*", runId: "1", runAttempt: "1" })).toBe("vps-deployment-record-invalid-stack-1-1");
+    expect(recordArtifactName({ stackName: "x", runId: "1*", runAttempt: undefined })).toBe("vps-deployment-record-x-0-1");
+    // The name is used as a download pattern, so it must never contain glob syntax.
+    for (const stackName of ["a*", "a?", "[a]", "{a,b}", "!a", "a/b"]) expect(recordArtifactName({ ...identity, stackName })).not.toMatch(/[*?[\]{}!/]/u);
+  });
+
+  it("round-trips every output through the uploaded record for the four-component backend", () => {
+    const result = {
+      status: "succeeded", deployedId: commit, previousDeploymentId: "c".repeat(40),
+      restoration: { attempted: false, outcome: "not-required" }, migration: { configured: true, status: "succeeded", started: true, exitCode: 0 },
+    };
+    const record = buildRecord({ STACK_NAME: identity.stackName }, { bundle, result, failure: null });
+    const loaded = readDeploymentRecord(writeRecord(record));
+    expect(loaded.present).toBe(true);
+    expect(reportOutputs(loaded, recordArtifactName(identity))).toEqual({
+      "deployment-status": "succeeded", "deployed-id": commit, "previous-deployment-id": "c".repeat(40),
+      "deployment-record-artifact": "vps-deployment-record-example-backend-production-45027735800-2",
+      "deployment-outcome": "succeeded", "failed-phase": "", "failure-category": "", "migration-status": "succeeded", "restoration-outcome": "not-required",
+    });
+  });
+
+  it("reports a restored rollout from the record without claiming success", () => {
+    const result = {
+      status: "restored-after-failure", failedPhase: "health", deployedId: commit, previousDeploymentId: "prev",
+      failure: { category: "health", message: "api is unhealthy" }, restoration: { attempted: true, outcome: "restored" },
+      migration: { configured: true, status: "succeeded", started: true, exitCode: 0 },
+    };
+    const outputs = reportOutputs(readDeploymentRecord(writeRecord(buildRecord({}, { bundle, result, failure: null }))), "rec");
+    expect(outputs).toMatchObject({
+      "deployment-status": "restored-after-failure", "deployed-id": "", "previous-deployment-id": "prev", "deployment-record-artifact": "rec",
+      "deployment-outcome": "restored-after-failure", "failed-phase": "health", "restoration-outcome": "restored",
+    });
+  });
+
+  it("reports unknown, never succeeded, when the deploy job ended before uploading its record", () => {
+    const loaded = readDeploymentRecord(mkdtempSync(join(tmpdir(), "vps-report-empty-")));
+    expect(loaded).toEqual({ present: false, record: null });
+    expect(reportOutputs(loaded, "rec")).toEqual({
+      "deployment-status": "failed", "deployed-id": "", "previous-deployment-id": "", "deployment-record-artifact": "",
+      "deployment-outcome": "unknown", "failed-phase": "unknown", "failure-category": "unknown", "migration-status": "unknown", "restoration-outcome": "unknown",
+    });
+  });
+
+  it.each([
+    ["not JSON", "{"],
+    ["an array", "[]"],
+    ["a future schema", { schemaVersion: 2, status: "succeeded" }],
+    ["an unknown status", { schemaVersion: 1, status: "pwned" }],
+  ])("treats a record that is %s as unknown but still names the uploaded artifact", (_label, content) => {
+    const loaded = readDeploymentRecord(writeRecord(content));
+    expect(loaded).toEqual({ present: true, record: null });
+    expect(reportOutputs(loaded, "rec")).toMatchObject({ "deployment-status": "failed", "deployment-outcome": "unknown", "deployment-record-artifact": "rec" });
+  });
+
+  it("rejects a record that is not a regular file", () => {
+    const folder = mkdtempSync(join(tmpdir(), "vps-report-dir-"));
+    mkdirSync(join(folder, "deployment-record.json"));
+    expect(readDeploymentRecord(folder)).toEqual({ present: true, record: null });
+  });
+
+  it("never emits multi-line values from a tampered record", () => {
+    const tampered = { schemaVersion: 1, status: "succeeded", outcome: "succeeded", deployedId: "a\nname=value", previousDeploymentId: "b\rc", phase: "", failure: null, migration: null, restoration: null };
+    const outputs = reportOutputs({ present: true, record: tampered }, "rec");
+    expect(outputs["deployed-id"]).toBe("");
+    expect(outputs["previous-deployment-id"]).toBe("");
+    for (const value of Object.values(outputs)) expect(value).not.toMatch(/[\r\n]/u);
+  });
+
+  it("keeps outputs intact when credentials overlap them, because the report job references no secrets", () => {
+    // Regression for the masking defect: an ssh-user `deploy` is a substring of the artifact name,
+    // and a registry username equal to the repository owner is a substring of owner-derived IDs.
+    const sshUser = "deploy";
+    const registryUser = "example";
+    const result = { status: "succeeded", deployedId: `${registryUser}-backend-001`, previousDeploymentId: `${registryUser}-backend-000`, restoration: { attempted: false, outcome: "not-required" }, migration: { configured: true, status: "succeeded", started: true, exitCode: 0 } };
+    const outputs = reportOutputs(readDeploymentRecord(writeRecord(buildRecord({}, { bundle, result, failure: null }))), recordArtifactName(identity));
+    expect(outputs["deployment-record-artifact"]).toContain(sshUser);
+    expect(outputs["deployed-id"]).toContain(registryUser);
+    expect(outputs["deployed-id"]).toBe("example-backend-001");
   });
 });

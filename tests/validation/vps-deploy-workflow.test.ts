@@ -14,6 +14,21 @@ const jobs = isObject(workflow.jobs) ? workflow.jobs : {};
 const deploy = isObject(jobs.deploy) ? jobs.deploy : {};
 const steps = Array.isArray(deploy.steps) ? deploy.steps.filter(isObject) : [];
 const stepNamed = (name: string) => steps.find((step) => step.name === name) ?? {};
+const report = isObject(jobs.report) ? jobs.report : {};
+const reportSteps = Array.isArray(report.steps) ? report.steps.filter(isObject) : [];
+const outputNames = [
+  "deployment-status", "deployed-id", "previous-deployment-id", "deployment-record-artifact", "deployment-outcome",
+  "failed-phase", "failure-category", "migration-status", "restoration-outcome",
+];
+
+/** Every string in a parsed YAML node (keys and values, any depth). */
+function strings(node: unknown): string[] {
+  if (typeof node === "string") return [node];
+  if (Array.isArray(node)) return node.flatMap(strings);
+  if (node !== null && typeof node === "object") return Object.entries(node).flatMap(([key, value]) => [key, ...strings(value)]);
+  return [];
+}
+const secretReferences = (node: unknown) => strings(node).filter((value) => /\bsecrets\s*(?:\.|\[)/u.test(value));
 
 describe("vps-deploy reusable workflow", () => {
   it("matches the documented public contract and security policy", () => {
@@ -52,7 +67,7 @@ describe("vps-deploy reusable workflow", () => {
   });
 
   it("keeps inputs out of shell programs and never weakens host-key verification", () => {
-    steps.map((step) => step.run).filter((run): run is string => typeof run === "string").forEach((run) => {
+    [...steps, ...reportSteps].map((step) => step.run).filter((run): run is string => typeof run === "string").forEach((run) => {
       expect(run).not.toMatch(/\$\{\{\s*(?:inputs|secrets)\./u);
     });
     expect(source).not.toMatch(/StrictHostKeyChecking=(?:no|accept-new)|ssh-keyscan|secrets: inherit|doppler/iu);
@@ -66,15 +81,55 @@ describe("vps-deploy reusable workflow", () => {
     expect(String(final.run)).toContain('"$STATUS" != "succeeded"');
   });
 
-  it("exposes notification outputs from the always-run record step", () => {
+  it("exposes every workflow output from the always-run, secret-free report job", () => {
     const on = isObject(workflow.on) ? workflow.on : {};
     const call = isObject(on.workflow_call) ? on.workflow_call : {};
     const outputs = isObject(call.outputs) ? call.outputs : {};
-    const jobOutputs = isObject(deploy.outputs) ? deploy.outputs : {};
-    for (const name of ["deployment-outcome", "failed-phase", "failure-category", "migration-status", "restoration-outcome"]) {
-      expect(isObject(outputs[name]) ? outputs[name].value : undefined).toBe(`\${{ jobs.deploy.outputs.${name} }}`);
-      expect(jobOutputs[name]).toBe(`\${{ steps.record.outputs.${name} }}`);
+    expect(Object.keys(outputs)).toEqual(outputNames);
+    const jobOutputs = isObject(report.outputs) ? report.outputs : {};
+    expect(Object.keys(jobOutputs)).toEqual(outputNames);
+    for (const name of outputNames) {
+      expect(isObject(outputs[name]) ? outputs[name].value : undefined).toBe(`\${{ jobs.report.outputs.${name} }}`);
+      expect(jobOutputs[name]).toBe(`\${{ steps.report.outputs.${name} }}`);
     }
+    expect(report.needs).toBe("deploy");
+    expect(report.if).toBe("${{ always() }}");
+    expect(report.permissions).toEqual({ contents: "read" });
+    expect(report.environment).toBeUndefined();
+  });
+
+  it("detects secret references in every field shape the boundary check relies on", () => {
+    // Guards the traversal so a refactor cannot silently make the boundary checks vacuous.
+    const probes: unknown[] = [
+      { env: { A: "${{ secrets.x }}" } }, { steps: [{ with: { a: "${{ secrets.x }}" } }] }, { if: "secrets.x != ''" },
+      { steps: [{ env: { A: "${{ secrets['x'] }}" } }] }, { steps: [{ run: "echo ${{ secrets.x }}" }] }, { outputs: { a: "${{ secrets.x }}" } },
+    ];
+    for (const probe of probes) expect(secretReferences(probe)).not.toEqual([]);
+    expect(secretReferences({ env: { A: "${{ inputs.secretsless }}" } })).toEqual([]);
+  });
+
+  it("keeps the report job free of secret references and the deploy job free of job outputs", () => {
+    expect(Object.keys(jobs)).toEqual(["deploy", "report"]);
+    expect(secretReferences(report)).toEqual([]);
+    expect(deploy.outputs).toBeUndefined();
+  });
+
+  it("locates the record without any output of the secret-bearing job and tolerates a missing record", () => {
+    expect(JSON.stringify(report)).not.toMatch(/needs\.deploy\.outputs/u);
+    const names = reportSteps.map((step) => step.name);
+    expect(names).toEqual([
+      "Resolve called workflow source", "Check out matching toolkit implementation", "Name the deployment record artifact",
+      "Download deployment record", "Export deployment outputs",
+    ]);
+    const download = reportSteps[3] ?? {};
+    const options = isObject(download.with) ? download.with : {};
+    expect(options.pattern).toBe("${{ steps.artifact.outputs.record-artifact }}");
+    expect(options).not.toHaveProperty("name");
+    expect(options["merge-multiple"]).toBe(true);
+    expect(String(reportSteps[2]?.run)).toContain("vps-deploy.mjs record-artifact");
+    expect(String(reportSteps[4]?.run)).toContain("vps-deploy.mjs report");
+    expect(report.env).toEqual({ STACK_NAME: "${{ inputs.stack-name }}", RUN_ID: "${{ github.run_id }}", RUN_ATTEMPT: "${{ github.run_attempt }}" });
+    expect(isObject(deploy.env) ? deploy.env.STACK_NAME : undefined).toBe("${{ inputs.stack-name }}");
   });
 
   it("keeps alert delivery out of the deployment job so it cannot change the deployment result", () => {
