@@ -25,9 +25,9 @@ Do not use `secrets: inherit` as the normal contract. Never pass secrets as regu
 
 GitHub Actions registers every secret a job references as a masking value. It also does this for a secret that appears only in a presence expression such as `${{ secrets.x != '' }}`. At job completion the runner skips any job output that contains a registered value as a substring, and warns `Skip output '<name>' since it may contain secret`. A downstream job then receives an empty string. This happens even when the matching text is legitimately public. A package or registry username that also names the repository owner or a Docker Hub namespace hides every output that contains a repository or image name. Short SSH users such as `deploy` can hide generated identifiers too.
 
-Avoid this by assigning responsibilities, not by working around masking: do not use `::add-mask::` tricks, encode outputs, rename repositories, or drop credentials. Jobs that validate public configuration, build matrices, or aggregate results reference no `secrets.*`. Credential presence is checked in the job that uses the credential, and that job exports no public outputs. `docker-publish.yml` follows this split (`prepare` and `aggregate` are secret-free), and its workflow tests enforce it.
+Avoid this by assigning responsibilities, not by working around masking: do not use `::add-mask::` tricks, encode outputs, rename repositories, or drop credentials. Jobs that validate public configuration, build matrices, or aggregate results reference no `secrets.*`. Credential presence is checked in the job that uses the credential, and that job exports no public outputs. `docker-publish.yml` follows this split (`prepare` and `aggregate` are secret-free). `vps-deploy.yml` follows it too: the `deploy` job uses the SSH and registry credentials and exports no job outputs, and the secret-free `report` job exports the workflow outputs from the uploaded audit record. Workflow tests enforce both splits.
 
-Review job outputs whenever a workflow gains a credential or a caller-controlled output field. Known exception: the `vps-deploy.yml` `deploy` job exports its outcome outputs from the same job that consumes the SSH and registry credentials, which is tracked as a follow-up.
+Review job outputs whenever a workflow gains a credential or a caller-controlled output field.
 
 ## Trust boundaries
 

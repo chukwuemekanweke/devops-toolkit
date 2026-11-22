@@ -169,6 +169,10 @@ describe.skipIf(process.platform === "win32")("generation lifecycle", () => {
   it("keeps root-owned ancestor validation enabled by default", async () => {
     const root = await temporaryRoot();
     try {
+      // Unprivileged runs create a fixture the caller owns. A root run (for example in a
+      // container) would create root-owned ancestors, so hand one to an unprivileged uid
+      // to keep exercising the rejection rather than passing vacuously.
+      if (process.getuid?.() === 0) await chown(join(root, "example", "prd"), 65534, 65534);
       await expect(new GenerationStore(instance(root)).status()).rejects.toThrow(/root-owned/u);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
