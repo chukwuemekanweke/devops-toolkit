@@ -155,8 +155,6 @@ jobs:
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_SHA: ${{ github.sha }}
           DEFAULT_BUILD_REFERENCE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PACKAGE_USERNAME: ${{ secrets.github-packages-username }}
-          PACKAGE_TOKEN: ${{ secrets.github-packages-token }}
           PREPARED_DIRECTORY: ${{ runner.temp }}/docker-publish/prepared
         run: node .devops-toolkit-source/scripts/docker-publish.mjs prepare
 
@@ -202,6 +200,15 @@ jobs:
           ref: ${{ steps.toolkit.outputs.sha }}
           path: .devops-toolkit-source
           persist-credentials: false
+
+      # Credential presence is validated here, not in prepare: a job that exports
+      # caller-controlled metadata must not consume secrets that can overlap it.
+      - name: Validate package credentials
+        env:
+          PACKAGE_AUTH_REQUIRED: ${{ matrix.packageAuth }}
+          PACKAGE_USERNAME: ${{ secrets.github-packages-username }}
+          PACKAGE_TOKEN: ${{ secrets.github-packages-token }}
+        run: node .devops-toolkit-source/scripts/docker-publish.mjs check-credentials
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1

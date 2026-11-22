@@ -54,6 +54,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `docker-publish.yml` no longer loses its image matrix to GitHub Actions job-output masking.
+  - Before this fix, the `prepare` job read `github-packages-username`/`github-packages-token` to check credential presence. When the package username also appeared in public metadata (repository owner, Docker Hub namespace, image names), GitHub skipped the `matrix`, `source-repository`, and `build-reference` outputs as possibly secret. No image jobs were scheduled and no manifest was produced.
+  - `prepare` and `aggregate` now reference no secrets. Each `build_publish` matrix job checks credential presence with the new internal `docker-publish.mjs check-credentials` command, before Docker Hub login, immutable-tag inspection, and push.
+  - The credential rules and error messages are unchanged. So are the workflow inputs, secrets, outputs, matrix shape, BuildKit secret IDs, artifact names, and manifest schema.
+  - Missing package credentials now fail the affected component jobs rather than `prepare`. A public component configured alongside an authenticated one can therefore be pushed before the run fails, and no release manifest is produced.
 - DEVOPS-007 units failed on every real systemd host. This was found by the new systemd harness:
   - `runtime-secrets-{render,activate,discard,restore}@` ran Node.js under `MemoryDenyWriteExecute=yes`, which aborts V8's JIT. They now run `node --jitless` and keep the hardening.
   - `runtime-secrets-render@`'s `SystemCallFilter=~@privileged` also denied `@chown`, which killed the helper with SIGSYS while it set generation file ownership. `@chown` is now explicitly re-allowed.

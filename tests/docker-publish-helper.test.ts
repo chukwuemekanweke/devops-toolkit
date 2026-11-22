@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { JsonSchemaValidator } from "../src/validation/json-schema-validator.js"
 import {
   aggregateRelease,
   buildArgsList,
+  checkPackageCredentials,
   createComponentResult,
   normalizeDeploymentTag,
   parseJsonStrict,
@@ -14,7 +16,10 @@ import {
   stableStringify,
   validateAndNormalizeConfig,
   validateCredentialPair,
+  validatePrepareInputs,
 } from "../scripts/docker-publish.mjs";
+
+const helper = join(import.meta.dirname, "..", "scripts", "docker-publish.mjs");
 
 function workspace(): string {
   const root = mkdtempSync(join(tmpdir(), "docker-publish-"));
@@ -112,6 +117,171 @@ describe("package authentication and identity", () => {
   });
 });
 
+describe("secret-free preparation", () => {
+  // Mirrors the backend template whose run 45027735800 lost its matrix: the package username
+  // also appears in the source repository, the Docker Hub namespace, and every image name.
+  const overlapping = "chukwuemekanweke";
+  const components = ["webapi", "consumer", "jobs", "migrator"];
+
+  function backendWorkspace(): string {
+    const root = mkdtempSync(join(tmpdir(), "docker-publish-backend-"));
+    for (const component of components) {
+      mkdirSync(join(root, "src", component), { recursive: true });
+      writeFileSync(join(root, "src", component, "Dockerfile"), "FROM scratch\n");
+    }
+    mkdirSync(join(root, ".github"), { recursive: true });
+    writeFileSync(join(root, ".github", "docker-images.json"), JSON.stringify({
+      schemaVersion: 1,
+      images: components.map((component) => ({
+        component, image: `docker.io/${overlapping}/backendprojecttemplate-${component}`, dockerfile: `src/${component}/Dockerfile`,
+      })),
+    }));
+    return root;
+  }
+
+  const environment = {
+    DEPLOYMENT_ID: "1".repeat(40),
+    IMAGE_CONFIG_PATH: ".github/docker-images.json",
+    PACKAGE_AUTH_COMPONENTS: "webapi\nconsumer\njobs\nmigrator\n",
+    SOURCE_REPOSITORY: "",
+    SOURCE_COMMIT: "",
+    BUILD_REFERENCE: "",
+    REGISTRY: "docker.io",
+    PLATFORMS: "linux/amd64",
+    ARTIFACT_RETENTION_DAYS: "30",
+    CALLER_REPOSITORY: `${overlapping}/dotnet-core-project-template`,
+    CALLER_SHA: "a".repeat(40),
+    DEFAULT_BUILD_REFERENCE: `https://github.com/${overlapping}/dotnet-core-project-template/actions/runs/45027735800`,
+  };
+
+  it("prepares package-auth components without any package credentials", () => {
+    const value = normalize(config(), workspace(), { packageAuthComponents: "api" });
+    expect(value.images[0]).toMatchObject({ component: "api", packageAuth: true });
+  });
+
+  it("builds the full matrix from metadata that overlaps the package username, with no secret available", () => {
+    const prepared = validatePrepareInputs({ ...environment }, backendWorkspace());
+    expect(prepared.sourceRepository).toBe(`${overlapping}/dotnet-core-project-template`);
+    expect(prepared.buildReference).toBe(environment.DEFAULT_BUILD_REFERENCE);
+    expect(prepared.tag).toBe(`release-${"1".repeat(40)}`);
+    expect(prepared.matrix.include).toEqual(components.map((component) => ({
+      component,
+      image: `docker.io/${overlapping}/backendprojecttemplate-${component}`,
+      dockerfile: `src/${component}/Dockerfile`,
+      context: ".",
+      buildArgsText: "",
+      packageAuth: true,
+    })));
+  });
+
+  it("ignores package credentials during preparation and produces an identical matrix", () => {
+    const root = backendWorkspace();
+    const without = validatePrepareInputs({ ...environment }, root);
+    const halfPair = validatePrepareInputs({ ...environment, PACKAGE_USERNAME: overlapping }, root);
+    expect(stableStringify(halfPair.matrix)).toBe(stableStringify(without.matrix));
+  });
+
+  it("marks only selected components for package authentication", () => {
+    const prepared = validatePrepareInputs({ ...environment, PACKAGE_AUTH_COMPONENTS: "webapi\nmigrator" }, backendWorkspace());
+    expect(prepared.matrix.include.map((item) => [item.component, item.packageAuth])).toEqual([
+      ["webapi", true], ["consumer", false], ["jobs", false], ["migrator", true],
+    ]);
+  });
+
+  it("keeps the prepare CLI free of credentials and writes the expected outputs", () => {
+    const root = backendWorkspace();
+    const outputFile = join(root, "github-output");
+    writeFileSync(outputFile, "");
+    const result = spawnSync(process.execPath, [helper, "prepare"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ...environment, GITHUB_WORKSPACE: root, GITHUB_OUTPUT: outputFile, PREPARED_DIRECTORY: join(root, "prepared") },
+    });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const outputs = Object.fromEntries(readFileSync(outputFile, "utf8").trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+    expect(Object.keys(outputs)).toEqual(["matrix", "deployment-id", "tag", "source-repository", "source-commit", "build-reference", "retention-days"]);
+    expect((JSON.parse(outputs.matrix ?? "{}") as { include: unknown[] }).include).toHaveLength(4);
+    expect(outputs["source-repository"]).toBe(`${overlapping}/dotnet-core-project-template`);
+  });
+
+  it.each([
+    ["an invalid image repository", { image: "docker.io/Invalid/Name" }, /image/u],
+    ["an invalid Dockerfile path", { dockerfile: "../Dockerfile" }, /dockerfile/u],
+    ["an invalid build context", { context: "missing" }, /context/u],
+  ])("still rejects %s without credentials", (_label, override, message) => {
+    const root = backendWorkspace();
+    writeFileSync(join(root, ".github", "docker-images.json"), JSON.stringify({
+      schemaVersion: 1, images: [{ component: "webapi", image: "docker.io/example/api", dockerfile: "src/webapi/Dockerfile", ...override }],
+    }));
+    expect(() => validatePrepareInputs({ ...environment, PACKAGE_AUTH_COMPONENTS: "" }, root)).toThrow(message);
+  });
+
+  it.each([
+    ["an unknown package-auth component", { PACKAGE_AUTH_COMPONENTS: "web" }, /unknown component/u],
+    ["an invalid deployment ID", { DEPLOYMENT_ID: "bad id" }, /deployment-id/u],
+    ["an unsupported registry", { REGISTRY: "ghcr.io" }, /registry/u],
+  ])("still rejects %s without credentials", (_label, override, message) => {
+    expect(() => validatePrepareInputs({ ...environment, ...override }, backendWorkspace())).toThrow(message);
+  });
+});
+
+describe("per-component package credential check", () => {
+  const pair = { PACKAGE_USERNAME: "package-user", PACKAGE_TOKEN: "package-token-value" };
+
+  it.each([
+    ["required, complete pair", "true", pair, null],
+    ["required, token missing", "true", { PACKAGE_USERNAME: pair.PACKAGE_USERNAME }, /complete pair/u],
+    ["required, username missing", "true", { PACKAGE_TOKEN: pair.PACKAGE_TOKEN }, /complete pair/u],
+    ["required, both missing", "true", {}, /package-auth-components requires GitHub Packages credentials/u],
+    ["required, both empty strings (unset GitHub secrets)", "true", { PACKAGE_USERNAME: "", PACKAGE_TOKEN: "" }, /requires GitHub Packages credentials/u],
+    ["not required, complete pair", "false", pair, null],
+    ["not required, token missing", "false", { PACKAGE_USERNAME: pair.PACKAGE_USERNAME }, /complete pair/u],
+    ["not required, username missing", "false", { PACKAGE_TOKEN: pair.PACKAGE_TOKEN }, /complete pair/u],
+    ["not required, both missing", "false", {}, null],
+  ])("%s", (_label, required, credentials, error) => {
+    const check = () => checkPackageCredentials({ PACKAGE_AUTH_REQUIRED: required, ...credentials });
+    if (error) expect(check).toThrow(error);
+    else expect(check).not.toThrow();
+  });
+
+  it("preserves the existing presence semantics for whitespace-only values", () => {
+    // validateCredentialPair has always treated any non-empty string as present; this fix does not change that.
+    expect(() => checkPackageCredentials({ PACKAGE_AUTH_REQUIRED: "true", PACKAGE_USERNAME: " ", PACKAGE_TOKEN: " " })).not.toThrow();
+    expect(() => checkPackageCredentials({ PACKAGE_AUTH_REQUIRED: "false", PACKAGE_USERNAME: " " })).toThrow(/complete pair/u);
+  });
+
+  it.each([undefined, "", "TRUE", "False", "1", "0", "yes", " true", "null"])("rejects the non-boolean requirement flag %j", (flag) => {
+    expect(() => checkPackageCredentials({ PACKAGE_AUTH_REQUIRED: flag, ...pair })).toThrow(/PACKAGE_AUTH_REQUIRED must be 'true' or 'false'/u);
+  });
+
+  it("never treats the string 'false' as requiring credentials", () => {
+    expect(() => checkPackageCredentials({ PACKAGE_AUTH_REQUIRED: "false" })).not.toThrow();
+  });
+
+  it.each([
+    ["true", { PACKAGE_USERNAME: "overlapping-user-value" }],
+    ["false", { PACKAGE_TOKEN: "ghp_secretTokenValue123" }],
+  ])("fails through the CLI without printing credential values (required=%s)", (required, credentials) => {
+    const result = spawnSync(process.execPath, [helper, "check-credentials"], {
+      encoding: "utf8", env: { PATH: process.env.PATH, PACKAGE_AUTH_REQUIRED: required, ...credentials },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("docker-publish: GitHub Packages credentials must be supplied as a complete pair");
+    for (const value of Object.values(credentials)) {
+      expect(result.stderr).not.toContain(value);
+      expect(result.stdout).not.toContain(value);
+    }
+  });
+
+  it("succeeds silently through the CLI with a complete pair", () => {
+    const result = spawnSync(process.execPath, [helper, "check-credentials"], {
+      encoding: "utf8", env: { PATH: process.env.PATH, PACKAGE_AUTH_REQUIRED: "true", ...pair },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout + result.stderr).toBe("");
+  });
+});
+
 describe("release aggregation", () => {
   const normalized = {
     schemaVersion: 1, registry: "docker.io", platforms: ["linux/amd64"],
@@ -154,6 +324,12 @@ describe("release aggregation", () => {
     const results = images.map((image, index) => createComponentResult({ ...image, digest: `sha256:${index.toString(16).padStart(64, "0")}`, tag: "release-test", platforms: "linux/amd64", scanEnabled: true, sbomEnabled: true, provenanceEnabled: true }));
     const release = aggregateRelease({ ...values, normalized: { ...normalized, images }, results, generateSbom: true, generateProvenance: true });
     expect((release.manifest.components as unknown[])).toHaveLength(count);
+  });
+
+  it("refuses a release manifest when one component of four failed (for example its credential check)", () => {
+    const images = ["webapi", "consumer", "jobs", "migrator"].map((component) => ({ component, image: `docker.io/example/backend-${component}` }));
+    const results = images.slice(0, 3).map((image, index) => createComponentResult({ ...image, digest: `sha256:${index.toString(16).padStart(64, "0")}`, tag: "release-test", platforms: "linux/amd64", scanEnabled: true, sbomEnabled: true, provenanceEnabled: true }));
+    expect(() => aggregateRelease({ ...values, normalized: { ...normalized, images }, results })).toThrow(/missing component result 'migrator'/u);
   });
 
   it("rejects invalid digest creation", () => {

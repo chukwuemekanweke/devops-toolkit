@@ -138,6 +138,13 @@ export function validateCredentialPair(required, username, token) {
   if (required && !hasUsername) throw new Error("package-auth-components requires GitHub Packages credentials");
 }
 
+/** Validates the package credential pair for one matrix component. Never reports credential values. */
+export function checkPackageCredentials(environment) {
+  const flag = environment.PACKAGE_AUTH_REQUIRED;
+  if (flag !== "true" && flag !== "false") throw new Error("PACKAGE_AUTH_REQUIRED must be 'true' or 'false'");
+  validateCredentialPair(flag === "true", environment.PACKAGE_USERNAME, environment.PACKAGE_TOKEN);
+}
+
 export function validateAndNormalizeConfig(configText, options) {
   const workspace = realpathSync(options.workspace);
   if (Buffer.byteLength(configText, "utf8") > 256 * 1024) throw new Error("image configuration exceeds 256 KiB");
@@ -151,7 +158,7 @@ export function validateAndNormalizeConfig(configText, options) {
   const components = new Set();
   const normalized = config.images.map((entry, index) => normalizeImage(entry, index, workspace, components));
   const packageAuth = parsePackageAuthComponents(options.packageAuthComponents, normalized.map((item) => item.component));
-  validateCredentialPair(packageAuth.length > 0, options.packageUsername, options.packageToken);
+  // Credential presence is checked per component in build_publish (check-credentials), never here.
   const selected = new Set(packageAuth);
   return {
     schemaVersion: 1,
@@ -210,8 +217,6 @@ export function validatePrepareInputs(environment, workspace) {
     registry: environment.REGISTRY ?? "docker.io",
     platforms: environment.PLATFORMS ?? "linux/amd64",
     packageAuthComponents: environment.PACKAGE_AUTH_COMPONENTS,
-    packageUsername: environment.PACKAGE_USERNAME,
-    packageToken: environment.PACKAGE_TOKEN,
   });
   const matrix = { include: normalized.images.map(({ buildArgs: _buildArgs, ...image }) => image) };
   return { buildReference, configPath: configPath.relative, deploymentId, matrix, normalized, retentionDays, sourceCommit: sourceCommit.toLowerCase(), sourceRepository, tag: normalizeDeploymentTag(deploymentId) };
@@ -340,8 +345,9 @@ const invoked = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(im
 if (invoked) {
   try {
     if (process.argv[2] === "prepare") prepareCommand();
+    else if (process.argv[2] === "check-credentials") checkPackageCredentials(process.env);
     else if (process.argv[2] === "component") componentCommand();
     else if (process.argv[2] === "aggregate") aggregateCommand();
-    else throw new Error("usage: docker-publish.mjs <prepare|component|aggregate>");
+    else throw new Error("usage: docker-publish.mjs <prepare|check-credentials|component|aggregate>");
   } catch (error) { console.error(`docker-publish: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }
 }
