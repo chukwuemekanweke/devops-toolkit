@@ -243,7 +243,7 @@ jobs:
       - name: Build and push without package credentials
         id: build_public
         if: ${{ !matrix.packageAuth }}
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -259,7 +259,7 @@ jobs:
       - name: Build and push with package credentials
         id: build_private
         if: ${{ matrix.packageAuth }}
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           PACKAGE_USERNAME: ${{ secrets.github-packages-username }}
           PACKAGE_TOKEN: ${{ secrets.github-packages-token }}
