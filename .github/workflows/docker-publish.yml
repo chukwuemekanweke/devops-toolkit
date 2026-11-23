@@ -361,13 +361,13 @@ jobs:
           persist-credentials: false
 
       - name: Download normalized configuration
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: docker-publish-prepared-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/docker-publish/prepared
 
       - name: Download component results
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: image-result-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/docker-publish/results
